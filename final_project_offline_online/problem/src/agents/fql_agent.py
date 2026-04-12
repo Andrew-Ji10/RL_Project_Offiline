@@ -51,7 +51,7 @@ class FQLAgent(nn.Module):
         observation = ptu.from_numpy(np.asarray(observation))[None]
         # TODO(student): Compute the action for evaluation
         # Hint: Unlike SAC+BC and IQL, the evaluation action is *sampled* (i.e., not the mode or mean) from the policy
-        action = ...
+        action = self.actor(observation).rsample()
         action = torch.clamp(action, -1, 1)
         return ptu.to_numpy(action)[0]
 

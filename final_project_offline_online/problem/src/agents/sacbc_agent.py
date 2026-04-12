@@ -39,6 +39,7 @@ class SACBCAgent(nn.Module):
         self.discount = discount
         self.target_update_rate = target_update_rate
         self.alpha = alpha
+        self.loss_fn = nn.MSELoss()
 
         self.target_entropy = -action_dim / 2  # Heuristic value (|A| / 2) from the SAC paper.
 
