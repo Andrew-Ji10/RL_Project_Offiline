@@ -41,6 +41,7 @@ class SACBCAgent(nn.Module):
         self.alpha = alpha
 
         self.target_entropy = -action_dim / 2  # Heuristic value (|A| / 2) from the SAC paper.
+        self.loss_fn = nn.MSELoss()
 
     def get_action(self, observation: np.ndarray):
         """
