@@ -138,7 +138,7 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
 
     replay_buffer = ReplayBuffer(config["replay_buffer_capacity"])
 
-    observation = env.reset()
+    observation, _ = env.reset()
 
     for step in tqdm.trange(start_step, start_step + config['online_training_steps'], dynamic_ncols=True):
         
@@ -152,13 +152,14 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
         action = agent.get_action(observation)
 
         # Step the environment and add the data to the replay buffer
-        next_observation, reward, done, info = env.step(action)
+        next_observation, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
         replay_buffer.insert(
             observation=observation,
             action=action,
             reward=reward,
             next_observation=next_observation,
-            done=done and not info.get("TimeLimit.truncated", False),
+            done=done and not truncated,
         )
 
         if done:
@@ -166,7 +167,7 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
                 "Train_EpisodeReturn": info["episode"]["r"],
                 "Train_EpisodeLen": info["episode"]["l"],
             }, step)
-            observation = env.reset()
+            observation, _ = env.reset()
         else:
             observation = next_observation
 

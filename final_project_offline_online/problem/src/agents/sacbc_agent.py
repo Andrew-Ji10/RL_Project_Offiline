@@ -47,6 +47,8 @@ class SACBCAgent(nn.Module):
         """
         Used for evaluation.
         """
+        if isinstance(observation, tuple):
+            observation = observation[0]
         observation = ptu.from_numpy(np.asarray(observation))[None]
         # Get the mode action from a tanh transformed distribution.
         action = self.actor(observation).base_dist.base_dist.mode.tanh()
