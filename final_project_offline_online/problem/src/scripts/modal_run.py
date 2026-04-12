@@ -8,7 +8,10 @@ from scripts.train_offline_online import main, setup_arguments
 
 
 APP_NAME = "offline-to-online-project"
-NETRC_PATH = Path("~/.netrc").expanduser()
+NETRC_CANDIDATE_PATHS = [
+    Path("~/.netrc").expanduser(),   # Unix / macOS
+    Path("~/_netrc").expanduser(),   # Windows (wandb commonly writes here)
+]
 PROJECT_DIR = "/root/project"
 VOLUME_PATH = "/root/exp"
 DEFAULT_GPU = "T4"
@@ -46,13 +49,15 @@ def load_gitignore_patterns() -> list[str]:
 image = modal.Image.debian_slim().apt_install("libgl1", "libglib2.0-0").uv_sync()
 # Download OGBench datasets.
 image = image.run_commands("python -c \"import ogbench;ogbench.download_datasets(['cube-single-play-v0', 'cube-double-play-v0','antsoccer-arena-navigate-v0'])\"")
-# Copy .netrc for wandb logging.
-if NETRC_PATH.is_file():
-    image = image.add_local_file(
-        NETRC_PATH,
-        remote_path="/root/.netrc",
-        copy=True,
-    )
+# Copy netrc for wandb logging.
+for netrc_path in NETRC_CANDIDATE_PATHS:
+    if netrc_path.is_file():
+        image = image.add_local_file(
+            netrc_path,
+            remote_path="/root/.netrc",
+            copy=True,
+        )
+        break
 # Copy the current directory.
 image = image.add_local_dir(
     ".", remote_path=PROJECT_DIR, ignore=load_gitignore_patterns()

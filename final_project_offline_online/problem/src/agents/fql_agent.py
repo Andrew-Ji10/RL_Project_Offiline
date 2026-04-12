@@ -51,7 +51,7 @@ class FQLAgent(nn.Module):
         observation = ptu.from_numpy(np.asarray(observation))[None]
         # TODO(student): Compute the action for evaluation
         # Hint: Unlike SAC+BC and IQL, the evaluation action is *sampled* (i.e., not the mode or mean) from the policy
-        action = self.actor(observation).rsample()
+        action = self.onestep_actor(observation).rsample()
         action = torch.clamp(action, -1, 1)
         return ptu.to_numpy(action)[0]
 
@@ -62,8 +62,9 @@ class FQLAgent(nn.Module):
         """
         # TODO(student): Compute the BC flow action using the Euler method for `self.flow_steps` steps
         # Hint: This function should *only* be used in `update_onestep_actor`
-        action = ...
-        action = torch.clamp(action, -1, 1)
+        a = noise
+        for k in range (self.flow_steps):
+            t = torch.full((a.shape[0]), 1)
         return action
 
     @torch.compile
