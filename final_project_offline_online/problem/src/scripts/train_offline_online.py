@@ -20,14 +20,229 @@ def run_offline_training_loop(config: dict, train_logger, eval_logger, args: arg
     """
     # TODO(student): Implement offline training loop
     
-    return ...
+    #inspired by HW 5
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    ptu.init_gpu(use_gpu=not args.no_gpu, gpu_id=args.which_gpu)
+
+    # Make the gymnasium environment
+    env, dataset = config["make_env_and_dataset"]()
+
+    example_batch = dataset.sample(1)
+    agent_cls = agents[config["agent"]]
+    agent = agent_cls(
+        example_batch['observations'].shape[1:],
+        example_batch['actions'].shape[-1],
+        **config["agent_kwargs"],
+    )
+
+    ep_len = env.spec.max_episode_steps or env.max_episode_steps
+
+    for step in tqdm.trange(config["offline_training_steps"] + 1, dynamic_ncols=True):
+        # Train with offline RL
+        batch = dataset.sample(config["batch_size"])
+
+        batch = {
+            k: ptu.from_numpy(v) if isinstance(v, np.ndarray) else v for k, v in batch.items()
+        }
+
+        metrics = agent.update(
+            batch["observations"],
+            batch["actions"],
+            batch["rewards"],
+            batch["next_observations"],
+            batch["dones"],
+            step,
+        )
+
+        if step % args.log_interval == 0:
+            train_logger.log(metrics, step=step)
+
+        if step % args.eval_interval == 0:
+            # Evaluate
+            trajectories = utils.sample_n_trajectories(
+                env,
+                agent,
+                args.num_eval_trajectories,
+                ep_len,
+            )
+            successes = [t["episode_statistics"]["s"] for t in trajectories]
+
+            eval_logger.log(
+                {
+                    "eval/success_rate": float(np.mean(successes)),
+                },
+                step=step,
+            )
+
+    
+    return dump_log(agent, train_logger, eval_logger, config, args.save_dir)
 
 def run_online_training_loop(config: dict, train_logger, eval_logger, args: argparse.Namespace, agent_path: str, start_step: int = 0):
     """
     Run online training loop
     """
     # TODO(student): Implement online training loop
-    return ...
+
+
+    #inspired by HW 3
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+
+    # make the gym environment
+    env, _ = config["make_env_and_dataset"]()
+    eval_env, _ = config["make_env_and_dataset"]()
+
+    #load agent (new)
+    ob_shape = env.observation_space.shape
+    ac_dim = env.action_space.shape[0]
+    
+    agent_cls = agents[config["agent"]]
+    agent = agent_cls(
+        ob_shape,
+        ac_dim,
+        **config["agent_kwargs"],
+    )
+
+    agent.load_state_dict(torch.load(agent_path))
+    # load agent (end)
+
+
+    # render_env = config["make_env"](eval=True, render=True)
+
+    ep_len = env.spec.max_episode_steps or env.max_episode_steps
+
+    # discrete = isinstance(env.action_space, gym.spaces.Discrete)
+    # assert (
+    #     not discrete
+    # ), "SAC only supports continuous action spaces."
+
+    # ob_shape = env.observation_space.shape
+    # ac_dim = env.action_space.shape[0]
+
+    # simulation timestep, will be used for video saving
+    # if "model" in dir(env):
+    #     fps = 1 / env.model.opt.timestep
+    # elif "render_fps" in env.env.metadata:
+    #     fps = env.env.metadata["render_fps"]
+    # else:
+    #     fps = 10
+
+    # initialize agent
+    # agent = SoftActorCritic(
+    #     ob_shape,
+    #     ac_dim,
+    #     **config["agent_kwargs"],
+    # )
+    #done
+
+    replay_buffer = ReplayBuffer(config["replay_buffer_capacity"])
+
+    observation = env.reset()
+
+    for step in tqdm.trange(start_step, start_step + config['online_training_steps'], dynamic_ncols=True):
+        
+        #TODO - Personal, could bring this back if wanted 
+        # if step < config["random_steps"]:
+        #     action = env.action_space.sample()
+        # else:
+        #     # TODO(Section 3.1): Select an action
+        #     action = agent.get_action(observation)
+        #     # ENDTODO
+        action = agent.get_action(observation)
+
+        # Step the environment and add the data to the replay buffer
+        next_observation, reward, done, info = env.step(action)
+        replay_buffer.insert(
+            observation=observation,
+            action=action,
+            reward=reward,
+            next_observation=next_observation,
+            done=done and not info.get("TimeLimit.truncated", False),
+        )
+
+        if done:
+            train_logger.log({
+                "Train_EpisodeReturn": info["episode"]["r"],
+                "Train_EpisodeLen": info["episode"]["l"],
+            }, step)
+            observation = env.reset()
+        else:
+            observation = next_observation
+
+        # Train the agent
+        if step >= config["training_starts"]  + start_step:
+            # TODO(Section 3.1): Sample a batch of config["batch_size"] transitions from the replay buffer
+            batch = replay_buffer.sample(config['batch_size'])
+            batch = {
+                k: ptu.from_numpy(v) if isinstance(v, np.ndarray) else v for k, v in batch.items()
+            }
+
+
+            update_info = agent.update(
+                observations = batch["observations"], 
+                actions = batch["actions"], 
+                rewards = batch['rewards'], 
+                next_observations = batch['next_observations'], 
+                dones = batch['dones'], 
+                step = step)
+            # ENDTODO
+
+            # Logging
+            if step % args.log_interval == 0:
+                if step % args.eval_interval != 0:
+                    train_logger.log(update_info, step)
+
+        # Run evaluation
+        if step % args.eval_interval == 0:
+            # Evaluate
+            trajectories = utils.sample_n_trajectories(
+                eval_env,
+                policy=agent,
+                ntraj=args.num_eval_trajectories,
+                max_length=ep_len,
+            )
+            returns = [t["episode_statistics"]["r"] for t in trajectories]
+            ep_lens = [t["episode_statistics"]["l"] for t in trajectories]
+
+            eval_metrics = {
+                "Eval_AverageReturn": np.mean(returns),
+                "Eval_StdReturn": np.std(returns),
+                "Eval_MaxReturn": np.max(returns),
+                "Eval_MinReturn": np.min(returns),
+                "Eval_AverageEpLen": np.mean(ep_lens),
+            }
+
+            # Merge training metrics if available
+            if step >= start_step + config["training_starts"]:
+                eval_metrics.update(update_info)
+            eval_logger.log(eval_metrics, step)
+
+            # if args.num_render_trajectories > 0:
+            #     video_trajectories = utils.sample_n_trajectories(
+            #         render_env,
+            #         agent,
+            #         args.num_render_trajectories,
+            #         ep_len,
+            #         render=True,
+            #     )
+
+            #     eval_logger.log_paths_as_videos(
+            #         video_trajectories,
+            #         step,
+            #         fps=fps,
+            #         max_videos_to_save=args.num_render_trajectories,
+            #         video_title="eval_rollouts",
+            #     )
+
+            # Save checkpoint periodically
+            dump_log(agent, train_logger, eval_logger, config, args.save_dir)
+
+
+
+
+    return dump_log(agent, train_logger, eval_logger, config, args.save_dir)
+
 
 
 def setup_arguments(args=None):
@@ -46,6 +261,7 @@ def setup_arguments(args=None):
     parser.add_argument("--eval_interval", type=int, default=100000)
     parser.add_argument("--num_eval_trajectories", type=int, default=25)  # Should be greater than or equal to 20 to pass autograder
     
+
     # Online retention of offline data
     # TODO(student): If desired, add arguments for online retention of offline data
     
@@ -91,6 +307,7 @@ def main(args):
     config['replay_buffer_capacity'] = args.replay_buffer_capacity
     
     # TODO(student): If necessary, add additional config values
+    config["training_starts"] = 10000 # HW 3 sac_config.py
 
     exp_name = f"sd{args.seed}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{config['log_name']}"
 
@@ -123,14 +340,14 @@ def main(args):
         print(f"Running offline training loop with {args.offline_training_steps} steps")
         # TODO(student): Implement offline training loop
         # Hint: You might consider passing the agent's path to the online training loop
-        ... = run_offline_training_loop(config, train_logger, eval_logger, args, start_step=0)
+        agent_path_offline = run_offline_training_loop(config, train_logger, eval_logger, args, start_step=0)
         start_step = args.offline_training_steps
         
     
     if args.online_training_steps > 0:
         print(f"Running online training loop with {args.online_training_steps} steps")
         # TODO(student): Implement online training loop
-        run_online_training_loop(config, train_logger, eval_logger, args, ..., start_step=start_step)
+        agent_path_online = run_online_training_loop(config, train_logger, eval_logger, args, agent_path_offline, start_step=start_step)
 
 
 if __name__ == "__main__":
