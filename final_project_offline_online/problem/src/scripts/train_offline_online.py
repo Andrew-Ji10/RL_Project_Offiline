@@ -163,9 +163,12 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
         )
 
         if done:
+            episode_info = info.get("episode", {})
+            episode_return = episode_info.get("r", episode_info.get("return"))
+            episode_len = episode_info.get("l", episode_info.get("length"))
             train_logger.log({
-                "Train_EpisodeReturn": info["episode"]["r"],
-                "Train_EpisodeLen": info["episode"]["l"],
+                "Train_EpisodeReturn": episode_return,
+                "Train_EpisodeLen": episode_len,
             }, step)
             observation, _ = env.reset()
         else:
