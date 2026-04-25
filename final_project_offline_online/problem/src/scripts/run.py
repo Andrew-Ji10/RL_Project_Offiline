@@ -84,7 +84,7 @@ def setup_arguments(args=None):
     parser.add_argument("--no_gpu", action="store_true")
     parser.add_argument("--which_gpu", default=0)
     parser.add_argument("--training_steps", type=int, default=1000000)  # Should be less than or equal to 1M to pass autograder
-    parser.add_argument("--log_interval", type=int, default=10000)
+    parser.add_argument("--log_interval", type=int, default=100)
     parser.add_argument("--eval_interval", type=int, default=100000)
     parser.add_argument("--num_eval_trajectories", type=int, default=25)  # Should be greater than or equal to 20 to pass autograder
 

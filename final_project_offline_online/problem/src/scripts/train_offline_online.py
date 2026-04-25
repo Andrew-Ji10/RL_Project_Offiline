@@ -208,6 +208,7 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
             )
             returns = [t["episode_statistics"]["r"] for t in trajectories]
             ep_lens = [t["episode_statistics"]["l"] for t in trajectories]
+            successes = [t["episode_statistics"]["s"] for t in trajectories]
 
             eval_metrics = {
                 "Eval_AverageReturn": np.mean(returns),
@@ -215,13 +216,13 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
                 "Eval_MaxReturn": np.max(returns),
                 "Eval_MinReturn": np.min(returns),
                 "Eval_AverageEpLen": np.mean(ep_lens),
+                "eval/success_rate": float(np.mean(successes)),
             }
 
             # Merge training metrics if available
             if step >= start_step + config["training_starts"]:
                 eval_metrics.update(update_info)
             eval_logger.log(eval_metrics, step)
-
             # if args.num_render_trajectories > 0:
             #     video_trajectories = utils.sample_n_trajectories(
             #         render_env,
@@ -261,8 +262,8 @@ def setup_arguments(args=None):
     parser.add_argument("--offline_training_steps", type=int, default=500000)  # Should be 500k to pass the autograder
     parser.add_argument("--online_training_steps", type=int, default=100000)  # Should be 100k to pass the autograder
     parser.add_argument("--replay_buffer_capacity", type=int, default=1000000)
-    parser.add_argument("--log_interval", type=int, default=10000)
-    parser.add_argument("--eval_interval", type=int, default=100000)
+    parser.add_argument("--log_interval", type=int, default=20000)
+    parser.add_argument("--eval_interval", type=int, default=20000)
     parser.add_argument("--num_eval_trajectories", type=int, default=25)  # Should be greater than or equal to 20 to pass autograder
     
 
