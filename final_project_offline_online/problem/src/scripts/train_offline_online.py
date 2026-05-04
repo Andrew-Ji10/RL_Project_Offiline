@@ -138,6 +138,24 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
 
     replay_buffer = ReplayBuffer(config["replay_buffer_capacity"])
 
+    #4.1- offline data pre-filling the replay buffer 
+    n_offline = int(config.get("offline_data", 0))
+    if n_offline > 0:
+        _, offline_dataset = config["make_env_and_dataset"]()
+        n = min(n_offline, offline_dataset.size)
+        idx = np.random.choice(offline_dataset.size, size=n, replace=False)
+        for i in idx:
+            r = offline_dataset.rewards[i]
+            d = offline_dataset.dones[i]
+            replay_buffer.insert(
+                observation=offline_dataset.observations[i],
+                action=offline_dataset.actions[i],
+                reward=float(r) if np.ndim(r) == 0 else r,
+                next_observation=offline_dataset.next_observations[i],
+                done=bool(d),
+            )
+        print(f"[s2_offline] Seeded replay buffer with {n} offline transitions.")
+
     observation, _ = env.reset()
 
     for step in tqdm.trange(start_step, start_step + config['online_training_steps'], dynamic_ncols=True):
@@ -174,14 +192,22 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
         else:
             observation = next_observation
 
+        #4.2- WSRL for N warmup online steps
+        #NOT gradient-updated during wsrl steps.
+        online_step = step - start_step
+        in_warmup = online_step < int(config.get("wsrl_steps", 0))
+        #buffer is done filling up?
+        buffer_warm = step >= config["training_starts"] + start_step
+
         # Train the agent
-        if step >= config["training_starts"]  + start_step:
-            # TODO(Section 3.1): Sample a batch of config["batch_size"] transitions from the replay buffer
+        # if step >= config["training_starts"]  + start_step:
+        #     # TODO(Section 3.1): Sample a batch of config["batch_size"] transitions from the replay buffer
+        # change for warmstart compatibility
+        if buffer_warm and not in_warmup:
             batch = replay_buffer.sample(config['batch_size'])
             batch = {
                 k: ptu.from_numpy(v) if isinstance(v, np.ndarray) else v for k, v in batch.items()
             }
-
 
             update_info = agent.update(
                 observations = batch["observations"], 
@@ -219,8 +245,10 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
                 "eval/success_rate": float(np.mean(successes)),
             }
 
-            # Merge training metrics if available
-            if step >= start_step + config["training_starts"]:
+            # Merge training metrics if available (skipped during WSRL warmup,
+            # since `update_info` is only defined when the agent has been updated).
+            # if step >= start_step + config["training_starts"]:
+            if buffer_warm and not in_warmup:
                 eval_metrics.update(update_info)
             eval_logger.log(eval_metrics, step)
             # if args.num_render_trajectories > 0:
@@ -269,9 +297,17 @@ def setup_arguments(args=None):
 
     # Online retention of offline data
     # TODO(student): If desired, add arguments for online retention of offline data
-    
+    parser.add_argument(
+        "--offline_data", type=int, default=0,
+        help="Number of offline transitions to pre-fill into the online replay buffer.",
+    )
+
     # WSRL
     # TODO (student): If desired, add arguments for WSRL
+    parser.add_argument(
+        "--wsrl_steps", type=int, default=0,
+        help="Number of warm-up env steps at the start of online training during which the agent is NOT updated.",
+    )
     
 
     # IFQL
@@ -313,8 +349,15 @@ def main(args):
     
     # TODO(student): If necessary, add additional config values
     config["training_starts"] = 10000 # HW 3 sac_config.py
+    config["offline_data"] = args.offline_data #4.1 offline data
+    config["wsrl_steps"] = args.wsrl_steps #4.2 WSRL
 
     exp_name = f"sd{args.seed}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{config['log_name']}"
+    #add expname debug to differentiate between runs
+    if args.offline_data > 0:
+        exp_name = f"{exp_name}_od{args.offline_data}"
+    if args.wsrl_steps > 0:
+        exp_name = f"{exp_name}_w{args.wsrl_steps}"
 
     # Override agent hyperparameters if specified
     if args.expectile is not None:
