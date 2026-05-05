@@ -1,3 +1,4 @@
+import os
 import time
 import argparse
 from pathlib import Path
@@ -70,8 +71,23 @@ env = {
     "PYTHONPATH": f"{PROJECT_DIR}/src",
 }
 
+# Forward W&B credentials from the local environment into the container.
+# Modal does not auto-forward local env vars, so we explicitly pass them as a Secret.
+_wandb_secret_env = {
+    k: v
+    for k, v in {
+        "WANDB_API_KEY": os.environ.get("WANDB_API_KEY"),
+        "WANDB_ENTITY": os.environ.get("WANDB_ENTITY"),
+        "WANDB_PROJECT": os.environ.get("WANDB_PROJECT"),
+    }.items()
+    if v
+}
+secrets = (
+    [modal.Secret.from_dict(_wandb_secret_env)] if _wandb_secret_env else []
+)
 
-@app.function(volumes={VOLUME_PATH: volume}, timeout=60 * 60 * 12, env=env, image=image, gpu=DEFAULT_GPU, cpu=DEFAULT_CPU, memory=DEFAULT_MEMORY)
+
+@app.function(volumes={VOLUME_PATH: volume}, timeout=60 * 60 * 12, env=env, secrets=secrets, image=image, gpu=DEFAULT_GPU, cpu=DEFAULT_CPU, memory=DEFAULT_MEMORY)
 def offline_to_online_modal_remote(*args: str) -> None:
     args = setup_arguments(args)
     if args.njobs is not None and len(args.job_specs) > 0:

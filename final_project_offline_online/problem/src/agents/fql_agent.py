@@ -152,12 +152,12 @@ class FQLAgent(nn.Module):
             bc_action = self.get_bc_action(observations, noise)
         t0 = torch.zeros((actions.shape[0], 1), device=actions.device)
         pred = noise + self.onestep_actor(observations, noise, t0)  # unclipped for distill
-        distill_loss = self.loss_fn(pred, bc_action)
+        distill_loss = self.alpha * self.loss_fn(pred, bc_action)
 
         # Hint: *Do* clip the one-step actor actions when feeding them to the critic
         clipped = torch.clamp(pred, -1, 1)
         q_val = self.critic(observations, clipped)
-        q_loss = -self.alpha * q_val.mean()
+        q_loss = -q_val.mean()
 
         # Total loss.
         loss = distill_loss + q_loss
