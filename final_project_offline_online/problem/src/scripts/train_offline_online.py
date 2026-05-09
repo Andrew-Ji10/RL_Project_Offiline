@@ -5,6 +5,7 @@ from datetime import datetime
 import numpy as np
 import torch
 import tqdm
+import wandb
 
 import configs
 from agents import agents
@@ -396,6 +397,8 @@ def main(args):
         print(f"Running online training loop with {args.online_training_steps} steps")
         # TODO(student): Implement online training loop
         agent_path_online = run_online_training_loop(config, train_logger, eval_logger, args, agent_path_offline, start_step=start_step)
+        
+    wandb.finish()
 
 
 if __name__ == "__main__":
