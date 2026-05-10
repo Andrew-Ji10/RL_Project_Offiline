@@ -1,8 +1,0 @@
-ogbench
-matplotlib
-torch
-tqdm
-opencv-python
-ml_collections
-wandb
-modal
