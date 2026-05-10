@@ -9,10 +9,11 @@ import torch.nn as nn
 import infrastructure.pytorch_util as ptu
 from infrastructure.replay_buffer import ReplayBuffer
 from infrastructure.utils import EpisodeMonitor
-from networks.rl_networks import Policy, EnsembleCritic, VectorFieldPolicy
+from networks.rl_networks import Policy, EnsembleCritic, DeterministicPolicy, VectorFieldPolicy
 
 
-def dsrl_config(
+
+def fql_config(
     env_name: str,
     exp_name: Optional[str] = None,
     hidden_size: int = 512,
@@ -21,51 +22,37 @@ def dsrl_config(
     discount: float = 0.99,
     target_update_rate: float = 0.005,
     flow_steps: int = 10,
-    noise_scale: float = 1.0,
+    alpha: float = 1.0,
     total_steps: int = 1000000,
     batch_size: int = 256,
     **kwargs,
 ):
-    def make_bc_flow_actor(observation_shape: Tuple[int, ...], action_dim: int) -> nn.Module:
-        # TODO(student): Create BC flow actor - refer to FQL config
+    def make_bc_actor(observation_shape: Tuple[int, ...], action_dim: int) -> nn.Module:
         return VectorFieldPolicy(
             ac_dim=action_dim,
-            ob_dim=observation_shape[0],
+            ob_dim=int(np.prod(observation_shape)),
             n_layers=num_layers,
             layer_size=hidden_size,
         )
 
-    def make_noise_actor(observation_shape: Tuple[int, ...], action_dim: int) -> nn.Module:
-        # TODO(student): Create noise actor - this can be a regular MLP
-        return Policy(
+    def make_onestep_actor(observation_shape: Tuple[int, ...], action_dim: int) -> nn.Module:
+        return VectorFieldPolicy(
             ac_dim=action_dim,
-            ob_dim=observation_shape[0],
-            discrete=False,
+            ob_dim=int(np.prod(observation_shape)),
             n_layers=num_layers,
             layer_size=hidden_size,
         )
 
     def make_critic(observation_shape: Tuple[int, ...], action_dim: int) -> nn.Module:
-        # TODO(student): Create critic - will be a ensemble of Q-functions
         return EnsembleCritic(
-            ob_dim=observation_shape[0],
-            ac_dim=action_dim,
-            n_layers=num_layers,
-            size=hidden_size,
-            n_ensembles=2,
-        )
-    
-    def make_noise_critic(observation_shape: Tuple[int, ...], action_dim: int) -> nn.Module:
-        # TODO(student): Create noise critic - will be a ensemble of Q-functions
-        return EnsembleCritic(
-            ob_dim=observation_shape[0],
+            ob_dim=int(np.prod(observation_shape)),
             ac_dim=action_dim,
             n_layers=num_layers,
             size=hidden_size,
             n_ensembles=2,
         )
 
-    def make_optimizer(params) -> torch.optim.Optimizer:
+    def make_optimizer(params: torch.nn.ParameterList) -> torch.optim.Optimizer:
         return torch.optim.Adam(params, lr=learning_rate)
 
     def make_env_and_dataset() -> Tuple[gymnasium.Env, ReplayBuffer]:
@@ -81,25 +68,23 @@ def dsrl_config(
 
         return env, dataset
 
-    log_string = f"{exp_name or 'dsrl'}_{env_name}"
+    log_string = f"{exp_name or 'fql'}_{env_name}"
 
     config = {
         "agent_kwargs": {
-            "make_bc_flow_actor": make_bc_flow_actor,
-            "make_bc_flow_actor_optimizer": make_optimizer,
-            "make_noise_actor": make_noise_actor,
-            "make_noise_actor_optimizer": make_optimizer,
+            "make_bc_actor": make_bc_actor,
+            "make_bc_actor_optimizer": make_optimizer,
+            "make_onestep_actor": make_onestep_actor,
+            "make_onestep_actor_optimizer": make_optimizer,
             "make_critic": make_critic,
             "make_critic_optimizer": make_optimizer,
-            "make_z_critic": make_noise_critic,
-            "make_z_critic_optimizer": make_optimizer,
 
             "discount": discount,
             "target_update_rate": target_update_rate,
             "flow_steps": flow_steps,
-            "noise_scale": noise_scale,
+            "alpha": alpha,
         },
-        "agent": "dsrl",
+        "agent": "fql",
         "log_name": log_string,
         "make_env_and_dataset": make_env_and_dataset,
         "total_steps": total_steps,
