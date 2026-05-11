@@ -7,6 +7,24 @@ import infrastructure.pytorch_util as ptu
 from typing import Callable, Optional, Sequence, Tuple, List
 
 
+def weighted_mean(values: torch.Tensor, sample_weights: Optional[torch.Tensor] = None) -> torch.Tensor:
+    if sample_weights is None:
+        return values.mean()
+    if values.shape[0] == sample_weights.shape[0]:
+        weights = sample_weights.view(-1, *([1] * (values.dim() - 1)))
+    else:
+        weights = sample_weights.view(1, -1, *([1] * (values.dim() - 2)))
+    return (values * weights).sum() / (weights.sum().clamp_min(1e-8) * values.numel() / sample_weights.numel())
+
+
+def weighted_mse(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    sample_weights: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    return weighted_mean((prediction - target).pow(2), sample_weights)
+
+
 class FQLAgent(nn.Module):
     def __init__(
         self,
@@ -81,6 +99,7 @@ class FQLAgent(nn.Module):
         rewards: torch.Tensor,
         next_observations: torch.Tensor,
         dones: torch.Tensor,
+        sample_weights: Optional[torch.Tensor] = None,
     ) -> dict:
         """
         Update Q(s, a)
@@ -93,12 +112,12 @@ class FQLAgent(nn.Module):
             t = torch.zeros((next_observations.shape[0], 1), device=next_observations.device)
             next_action = torch.clamp(noise + self.onestep_actor(next_observations, noise, t), -1, 1)
 
-            q_next = self.target_critic(next_observations, next_action).mean(dim=0)
+            q_next = self.target_critic(next_observations, next_action).min(dim=0).values
             target_q = rewards + self.discount * (1 - dones) * q_next
         
         actions = torch.clamp(actions, -1, 1)
         q = self.critic(observations, actions)
-        loss = self.loss_fn(q, target_q.unsqueeze(0).expand_as(q))
+        loss = weighted_mse(q, target_q.unsqueeze(0).expand_as(q), sample_weights)
 
         self.critic_optimizer.zero_grad()
         loss.backward()
@@ -116,6 +135,7 @@ class FQLAgent(nn.Module):
         self,
         observations: torch.Tensor,
         actions: torch.Tensor,
+        sample_weights: Optional[torch.Tensor] = None,
     ):
         """
         Update the BC actor
@@ -126,7 +146,7 @@ class FQLAgent(nn.Module):
         x_t = (1.0 - t) * noise + t * actions
         v_target = actions - noise
         v_pred = self.bc_actor(observations, x_t, t)
-        loss = self.loss_fn(v_pred, v_target)
+        loss = weighted_mse(v_pred, v_target, sample_weights)
 
         self.bc_actor_optimizer.zero_grad()
         loss.backward()
@@ -141,6 +161,7 @@ class FQLAgent(nn.Module):
         self,
         observations: torch.Tensor,
         actions: torch.Tensor,
+        sample_weights: Optional[torch.Tensor] = None,
     ):
         """
         Update the one-step actor
@@ -152,18 +173,18 @@ class FQLAgent(nn.Module):
             bc_action = self.get_bc_action(observations, noise)
         t0 = torch.zeros((actions.shape[0], 1), device=actions.device)
         pred = noise + self.onestep_actor(observations, noise, t0)  # unclipped for distill
-        distill_loss = self.alpha * self.loss_fn(pred, bc_action)
+        distill_loss = self.alpha * weighted_mse(pred, bc_action, sample_weights)
 
         # Hint: *Do* clip the one-step actor actions when feeding them to the critic
         clipped = torch.clamp(pred, -1, 1)
         q_val = self.critic(observations, clipped)
-        q_loss = -q_val.mean()
+        q_loss = -weighted_mean(q_val, sample_weights)
 
         # Total loss.
         loss = distill_loss + q_loss
 
         # Additional metrics for logging.
-        mse = self.loss_fn(pred, actions)
+        mse = weighted_mse(pred, actions, sample_weights)
 
         self.onestep_actor_optimizer.zero_grad()
         loss.backward()
@@ -184,10 +205,11 @@ class FQLAgent(nn.Module):
         next_observations: torch.Tensor,
         dones: torch.Tensor,
         step: int,
+        sample_weights: Optional[torch.Tensor] = None,
     ):
-        metrics_q = self.update_q(observations, actions, rewards, next_observations, dones)
-        metrics_bc_actor = self.update_bc_actor(observations, actions)
-        metrics_onestep_actor = self.update_onestep_actor(observations, actions)
+        metrics_q = self.update_q(observations, actions, rewards, next_observations, dones, sample_weights)
+        metrics_bc_actor = self.update_bc_actor(observations, actions, sample_weights)
+        metrics_onestep_actor = self.update_onestep_actor(observations, actions, sample_weights)
         metrics = {
             **{f"critic/{k}": v.item() for k, v in metrics_q.items()},
             **{f"bc_actor/{k}": v.item() for k, v in metrics_bc_actor.items()},

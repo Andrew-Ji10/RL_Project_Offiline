@@ -90,6 +90,13 @@ def setup_arguments(args=None):
 
     parser.add_argument("--expectile", type=float, default=None)
     parser.add_argument("--alpha", type=float, default=None)
+    parser.add_argument("--lower_agent", type=str, default=None, choices=["fql", "ifql", "sacbc"])
+    parser.add_argument("--world_model_warmup_steps", type=int, default=None)
+    parser.add_argument("--synthetic_start_uncertainty_threshold", type=float, default=None)
+    parser.add_argument("--initial_synthetic_ratio", type=float, default=None)
+    parser.add_argument("--synthetic_ratio", type=float, default=None)
+    parser.add_argument("--synthetic_ratio_ramp_rate", type=float, default=None)
+    parser.add_argument("--synthetic_uncertainty_weight_coef", type=float, default=None)
 
     # For njobs mode (optional)
     parser.add_argument("--njobs", type=int, default=None)
@@ -104,7 +111,10 @@ def main(args):
     # Create directory for logging
     logdir_prefix = "exp"  # Keep for autograder
 
-    config = configs.configs[args.base_config](args.env_name)
+    config_kwargs = {}
+    if args.lower_agent is not None:
+        config_kwargs["lower_agent"] = args.lower_agent
+    config = configs.configs[args.base_config](args.env_name, **config_kwargs)
 
     # Set common config values from args for autograder
     config['seed'] = args.seed
@@ -115,14 +125,49 @@ def main(args):
     config['num_eval_trajectories'] = args.num_eval_trajectories
 
     exp_name = f"sd{args.seed}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{config['log_name']}"
+    if args.lower_agent is not None:
+        exp_name = f"{exp_name}_lower{args.lower_agent}"
 
     # Override agent hyperparameters if specified
     if args.expectile is not None:
         config['agent_kwargs']['expectile'] = args.expectile
         exp_name = f"{exp_name}_e{args.expectile}"
     if args.alpha is not None:
-        config['agent_kwargs']['alpha'] = args.alpha
+        if "alpha" in config["agent_kwargs"]:
+            config['agent_kwargs']['alpha'] = args.alpha
+        elif "alpha" in config["agent_kwargs"].get("lower_agent_kwargs", {}):
+            config["agent_kwargs"]["lower_agent_kwargs"]["alpha"] = args.alpha
         exp_name = f"{exp_name}_a{args.alpha}"
+    if args.world_model_warmup_steps is not None and "world_model_warmup_steps" in config["agent_kwargs"]:
+        config["agent_kwargs"]["world_model_warmup_steps"] = args.world_model_warmup_steps
+        config["world_model_warmup_steps"] = args.world_model_warmup_steps
+        exp_name = f"{exp_name}_wmw{args.world_model_warmup_steps}"
+    if (
+        args.synthetic_start_uncertainty_threshold is not None
+        and "synthetic_start_uncertainty_threshold" in config["agent_kwargs"]
+    ):
+        config["agent_kwargs"]["synthetic_start_uncertainty_threshold"] = args.synthetic_start_uncertainty_threshold
+        config["synthetic_start_uncertainty_threshold"] = args.synthetic_start_uncertainty_threshold
+        exp_name = f"{exp_name}_suth{args.synthetic_start_uncertainty_threshold}"
+    if args.initial_synthetic_ratio is not None and "initial_synthetic_ratio" in config["agent_kwargs"]:
+        config["agent_kwargs"]["initial_synthetic_ratio"] = args.initial_synthetic_ratio
+        config["initial_synthetic_ratio"] = args.initial_synthetic_ratio
+        exp_name = f"{exp_name}_isr{args.initial_synthetic_ratio}"
+    if args.synthetic_ratio is not None and "synthetic_ratio" in config["agent_kwargs"]:
+        config["agent_kwargs"]["synthetic_ratio"] = args.synthetic_ratio
+        config["synthetic_ratio"] = args.synthetic_ratio
+        exp_name = f"{exp_name}_sr{args.synthetic_ratio}"
+    if args.synthetic_ratio_ramp_rate is not None and "synthetic_ratio_ramp_rate" in config["agent_kwargs"]:
+        config["agent_kwargs"]["synthetic_ratio_ramp_rate"] = args.synthetic_ratio_ramp_rate
+        config["synthetic_ratio_ramp_rate"] = args.synthetic_ratio_ramp_rate
+        exp_name = f"{exp_name}_srr{args.synthetic_ratio_ramp_rate}"
+    if (
+        args.synthetic_uncertainty_weight_coef is not None
+        and "synthetic_uncertainty_weight_coef" in config["agent_kwargs"]
+    ):
+        config["agent_kwargs"]["synthetic_uncertainty_weight_coef"] = args.synthetic_uncertainty_weight_coef
+        config["synthetic_uncertainty_weight_coef"] = args.synthetic_uncertainty_weight_coef
+        exp_name = f"{exp_name}_suw{args.synthetic_uncertainty_weight_coef}"
 
     setup_wandb(project='cs285_offline_online_proj', name=exp_name, group=args.run_group, config=config)
     args.save_dir = os.path.join(logdir_prefix, args.run_group, exp_name)

@@ -7,6 +7,24 @@ import infrastructure.pytorch_util as ptu
 from typing import Callable, Optional, Sequence, Tuple, List
 
 
+def weighted_mean(values: torch.Tensor, sample_weights: Optional[torch.Tensor] = None) -> torch.Tensor:
+    if sample_weights is None:
+        return values.mean()
+    if values.shape[0] == sample_weights.shape[0]:
+        weights = sample_weights.view(-1, *([1] * (values.dim() - 1)))
+    else:
+        weights = sample_weights.view(1, -1, *([1] * (values.dim() - 2)))
+    return (values * weights).sum() / (weights.sum().clamp_min(1e-8) * values.numel() / sample_weights.numel())
+
+
+def weighted_mse(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    sample_weights: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    return weighted_mean((prediction - target).pow(2), sample_weights)
+
+
 class SACBCAgent(nn.Module):
     def __init__(
         self,
@@ -62,6 +80,7 @@ class SACBCAgent(nn.Module):
         rewards: torch.Tensor,
         next_observations: torch.Tensor,
         dones: torch.Tensor,
+        sample_weights: Optional[torch.Tensor] = None,
     ) -> dict:
         """
         Update Q(s, a)
@@ -69,10 +88,11 @@ class SACBCAgent(nn.Module):
         # TODO(student): Compute the Q loss
         with torch.no_grad():
             next_actions = self.actor(next_observations).sample()
-            q = rewards + self.discount*(1-dones.float()) * torch.mean(self.target_critic(next_observations, next_actions), dim=0)
+            q_next = self.target_critic(next_observations, next_actions).min(dim=0).values
+            q = rewards + self.discount*(1-dones.float()) * q_next
         q_pred = self.critic(observations, actions)
         q_target = q.unsqueeze(0).expand_as(q_pred)
-        loss = self.loss_fn(q_pred, q_target)
+        loss = weighted_mse(q_pred, q_target, sample_weights)
 
         self.critic_optimizer.zero_grad()
         loss.backward()
@@ -90,6 +110,7 @@ class SACBCAgent(nn.Module):
         self,
         observations: torch.Tensor,
         actions: torch.Tensor,
+        sample_weights: Optional[torch.Tensor] = None,
     ):
         """
         Update the actor
@@ -99,12 +120,12 @@ class SACBCAgent(nn.Module):
         actions_pred = self.actor(observations)
         actions_sample = actions_pred.rsample()
 
-        q_loss = -(self.critic(observations, actions_sample).mean(dim=0)).mean()
+        q_loss = -weighted_mean(self.critic(observations, actions_sample).mean(dim=0), sample_weights)
 
-        mses = self.loss_fn(actions, actions_sample)
+        mses = weighted_mse(actions, actions_sample, sample_weights)
         bc_loss =  self.alpha * mses
 
-        entropy_loss = self.beta().detach() * actions_pred.log_prob(actions_sample).mean()
+        entropy_loss = self.beta().detach() * weighted_mean(actions_pred.log_prob(actions_sample), sample_weights)
 
         loss = q_loss + bc_loss + entropy_loss
 
@@ -124,6 +145,7 @@ class SACBCAgent(nn.Module):
     def update_beta(
         self,
         observations: torch.Tensor,
+        sample_weights: Optional[torch.Tensor] = None,
     ):
         """
         Update the beta parameter using dual gradient descent.
@@ -132,7 +154,7 @@ class SACBCAgent(nn.Module):
         actor_actions = actor_dists.rsample()
         log_probs = actor_dists.log_prob(actor_actions)
 
-        loss = self.beta() * (-log_probs - self.target_entropy).detach().mean()
+        loss = self.beta() * weighted_mean((-log_probs - self.target_entropy).detach(), sample_weights)
 
         self.beta_optimizer.zero_grad()
         loss.backward()
@@ -151,10 +173,11 @@ class SACBCAgent(nn.Module):
         next_observations: torch.Tensor,
         dones: torch.Tensor,
         step: int,
+        sample_weights: Optional[torch.Tensor] = None,
     ):
-        metrics_q = self.update_q(observations, actions, rewards, next_observations, dones)
-        metrics_actor = self.update_actor(observations, actions)
-        metrics_beta = self.update_beta(observations)
+        metrics_q = self.update_q(observations, actions, rewards, next_observations, dones, sample_weights)
+        metrics_actor = self.update_actor(observations, actions, sample_weights)
+        metrics_beta = self.update_beta(observations, sample_weights)
         metrics = {
             **{f"critic/{k}": v.item() for k, v in metrics_q.items()},
             **{f"actor/{k}": v.item() for k, v in metrics_actor.items()},

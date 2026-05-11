@@ -7,6 +7,24 @@ import infrastructure.pytorch_util as ptu
 from typing import Callable, Optional, Sequence, Tuple, List
 
 
+def weighted_mean(values: torch.Tensor, sample_weights: Optional[torch.Tensor] = None) -> torch.Tensor:
+    if sample_weights is None:
+        return values.mean()
+    if values.shape[0] == sample_weights.shape[0]:
+        weights = sample_weights.view(-1, *([1] * (values.dim() - 1)))
+    else:
+        weights = sample_weights.view(1, -1, *([1] * (values.dim() - 2)))
+    return (values * weights).sum() / (weights.sum().clamp_min(1e-8) * values.numel() / sample_weights.numel())
+
+
+def weighted_mse(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    sample_weights: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    return weighted_mean((prediction - target).pow(2), sample_weights)
+
+
 class IFQLAgent(nn.Module):
     def __init__(
         self,
@@ -53,19 +71,24 @@ class IFQLAgent(nn.Module):
         self.loss_fn = nn.MSELoss()
 
     @staticmethod
-    def expectile_loss(adv: torch.Tensor, expectile: float) -> torch.Tensor:
+    def expectile_loss(
+        adv: torch.Tensor,
+        expectile: float,
+        sample_weights: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """
         Compute the expectile loss for IFQL
         """
         # TODO(student): Implement the expectile loss
         weight = torch.where(adv >= 0, expectile, 1.0 - expectile)
-        return (weight * adv.pow(2)).mean()
+        return weighted_mean(weight * adv.pow(2), sample_weights)
 
     @torch.compile
     def update_value(
         self,
         observations: torch.Tensor,
         actions: torch.Tensor,
+        sample_weights: Optional[torch.Tensor] = None,
     ) -> dict:
         """
         Update value function
@@ -79,7 +102,7 @@ class IFQLAgent(nn.Module):
 
         v = self.value(observations)
         adv = q - v
-        loss = self.expectile_loss(adv, self.expectile)
+        loss = self.expectile_loss(adv, self.expectile, sample_weights)
 
         self.value_optimizer.zero_grad()
         loss.backward()
@@ -152,6 +175,7 @@ class IFQLAgent(nn.Module):
         rewards: torch.Tensor,
         next_observations: torch.Tensor,
         dones: torch.Tensor,
+        sample_weights: Optional[torch.Tensor] = None,
     ) -> dict:
         """
         Update Q(s, a) using the learned value function for bootstrapping,
@@ -166,7 +190,7 @@ class IFQLAgent(nn.Module):
 
         actions_clamped = torch.clamp(actions, -1, 1)
         q_pred = self.critic(observations, actions_clamped)
-        loss = self.loss_fn(q_pred, target_q.unsqueeze(0).expand_as(q_pred))
+        loss = weighted_mse(q_pred, target_q.unsqueeze(0).expand_as(q_pred), sample_weights)
 
         self.critic_optimizer.zero_grad()
         loss.backward()
@@ -186,6 +210,7 @@ class IFQLAgent(nn.Module):
         self,
         observations: torch.Tensor,
         actions: torch.Tensor,
+        sample_weights: Optional[torch.Tensor] = None,
     ):
         """
         Update the flow actor using the velocity matching loss.
@@ -198,7 +223,7 @@ class IFQLAgent(nn.Module):
         x_t = (1.0 - t) * noise + t * actions
         v_target = actions - noise
         v_pred = self.actor_flow(observations, x_t, t)
-        loss = self.loss_fn(v_pred, v_target)
+        loss = weighted_mse(v_pred, v_target, sample_weights)
 
         self.actor_flow_optimizer.zero_grad()
         loss.backward()
@@ -217,10 +242,11 @@ class IFQLAgent(nn.Module):
         next_observations: torch.Tensor,
         dones: torch.Tensor,
         step: int,
+        sample_weights: Optional[torch.Tensor] = None,
     ):
-        metrics_v = self.update_value(observations, actions)
-        metrics_q = self.update_q(observations, actions, rewards, next_observations, dones)
-        metrics_actor = self.update_actor(observations, actions)
+        metrics_v = self.update_value(observations, actions, sample_weights)
+        metrics_q = self.update_q(observations, actions, rewards, next_observations, dones, sample_weights)
+        metrics_actor = self.update_actor(observations, actions, sample_weights)
         metrics = {
             **{f"value/{k}": v.item() for k, v in metrics_v.items()},
             **{f"critic/{k}": v.item() for k, v in metrics_q.items()},
