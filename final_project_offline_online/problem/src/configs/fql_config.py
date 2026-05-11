@@ -26,6 +26,7 @@ def fql_config(
     n_critics: int = 2,
     q_pessimism_rho: Optional[float] = None,
     num_action_samples: int = 1,
+    compile_fql: bool = False,
     total_steps: int = 1000000,
     batch_size: int = 256,
     **kwargs,
@@ -88,6 +89,7 @@ def fql_config(
             "alpha": alpha,
             "q_pessimism_rho": q_pessimism_rho,
             "num_action_samples": num_action_samples,
+            "compile_fql": compile_fql,
         },
         "agent": "fql",
         "log_name": log_string,
@@ -101,6 +103,7 @@ def fql_config(
         "n_critics": n_critics,
         "q_pessimism_rho": q_pessimism_rho,
         "num_action_samples": num_action_samples,
+        "compile_fql": compile_fql,
         **kwargs,
     }
 

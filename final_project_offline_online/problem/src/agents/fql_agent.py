@@ -44,6 +44,7 @@ class FQLAgent(nn.Module):
         alpha: float,
         q_pessimism_rho: Optional[float] = None,
         num_action_samples: int = 1,
+        compile_fql: bool = False,
     ):
         super().__init__()
 
@@ -65,7 +66,19 @@ class FQLAgent(nn.Module):
         self.alpha = alpha
         self.q_pessimism_rho = q_pessimism_rho
         self.num_action_samples = num_action_samples
+        self.compile_fql = compile_fql
         self.loss_fn = nn.MSELoss()
+
+        if compile_fql:
+            self.get_bc_action_impl = torch.compile(self._get_bc_action_impl)
+            self.update_q_impl = torch.compile(self._update_q_impl)
+            self.update_bc_actor_impl = torch.compile(self._update_bc_actor_impl)
+            self.update_onestep_actor_impl = torch.compile(self._update_onestep_actor_impl)
+        else:
+            self.get_bc_action_impl = torch.compiler.disable(self._get_bc_action_impl)
+            self.update_q_impl = torch.compiler.disable(self._update_q_impl)
+            self.update_bc_actor_impl = torch.compiler.disable(self._update_bc_actor_impl)
+            self.update_onestep_actor_impl = torch.compiler.disable(self._update_onestep_actor_impl)
 
     def reduce_q_ensemble(self, q_values: torch.Tensor) -> torch.Tensor:
         if self.q_pessimism_rho is None:
@@ -100,8 +113,10 @@ class FQLAgent(nn.Module):
         action = self.sample_actions(observation)
         return ptu.to_numpy(action)[0]
 
-    @torch.compiler.disable
     def get_bc_action(self, observation: torch.Tensor, noise: torch.Tensor):
+        return self.get_bc_action_impl(observation, noise)
+
+    def _get_bc_action_impl(self, observation: torch.Tensor, noise: torch.Tensor):
         """
         Used for training.
         """
@@ -115,8 +130,18 @@ class FQLAgent(nn.Module):
             action = action + dt * vel
         return torch.clamp(action, -1, 1)
 
-    @torch.compiler.disable
     def update_q(
+        self,
+        observations: torch.Tensor,
+        actions: torch.Tensor,
+        rewards: torch.Tensor,
+        next_observations: torch.Tensor,
+        dones: torch.Tensor,
+        sample_weights: Optional[torch.Tensor] = None,
+    ) -> dict:
+        return self.update_q_impl(observations, actions, rewards, next_observations, dones, sample_weights)
+
+    def _update_q_impl(
         self,
         observations: torch.Tensor,
         actions: torch.Tensor,
@@ -134,7 +159,7 @@ class FQLAgent(nn.Module):
         with torch.no_grad():
             next_action = self.sample_actions(next_observations)
             q_next = self.reduce_q_ensemble(self.target_critic(next_observations, next_action))
-            target_q = rewards + self.discount * (1 - dones) * q_next
+            target_q = rewards + self.discount * (1.0 - dones.float()) * q_next
         
         actions = torch.clamp(actions, -1, 1)
         q = self.critic(observations, actions)
@@ -151,8 +176,15 @@ class FQLAgent(nn.Module):
             "q_min": q.min(),
         }
 
-    @torch.compiler.disable
     def update_bc_actor(
+        self,
+        observations: torch.Tensor,
+        actions: torch.Tensor,
+        sample_weights: Optional[torch.Tensor] = None,
+    ):
+        return self.update_bc_actor_impl(observations, actions, sample_weights)
+
+    def _update_bc_actor_impl(
         self,
         observations: torch.Tensor,
         actions: torch.Tensor,
@@ -177,8 +209,15 @@ class FQLAgent(nn.Module):
             "loss": loss,
         }
 
-    @torch.compiler.disable
     def update_onestep_actor(
+        self,
+        observations: torch.Tensor,
+        actions: torch.Tensor,
+        sample_weights: Optional[torch.Tensor] = None,
+    ):
+        return self.update_onestep_actor_impl(observations, actions, sample_weights)
+
+    def _update_onestep_actor_impl(
         self,
         observations: torch.Tensor,
         actions: torch.Tensor,

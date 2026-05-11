@@ -30,6 +30,7 @@ def world_model_config(
     n_critics: int = 2,
     q_pessimism_rho: Optional[float] = None,
     num_action_samples: int = 1,
+    compile_fql: bool = False,
     world_model_hidden_size: int = 512,
     world_model_num_layers: int = 3,
     world_model_learning_rate: float = 3e-4,
@@ -74,6 +75,7 @@ def world_model_config(
         lower_kwargs["n_critics"] = n_critics
         lower_kwargs["q_pessimism_rho"] = q_pessimism_rho
         lower_kwargs["num_action_samples"] = num_action_samples
+        lower_kwargs["compile_fql"] = compile_fql
     if lower_agent == "ifql":
         lower_kwargs["expectile"] = expectile
         lower_kwargs["num_samples"] = num_samples
@@ -119,6 +121,7 @@ def world_model_config(
         "n_critics": n_critics,
         "q_pessimism_rho": q_pessimism_rho,
         "num_action_samples": num_action_samples,
+        "compile_fql": compile_fql,
         "world_model_hidden_size": world_model_hidden_size,
         "world_model_num_layers": world_model_num_layers,
         "world_model_learning_rate": world_model_learning_rate,

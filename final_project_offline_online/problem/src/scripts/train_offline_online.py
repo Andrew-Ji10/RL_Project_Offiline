@@ -39,6 +39,9 @@ def run_offline_training_loop(config: dict, train_logger, eval_logger, args: arg
 
     ep_len = env.spec.max_episode_steps or env.max_episode_steps
 
+    best_eval_success = -float("inf")
+    best_agent_path = os.path.join(args.save_dir, "agent_best.pt")
+
     for step in tqdm.trange(config["offline_training_steps"] + 1, dynamic_ncols=True):
         # Train with offline RL
         batch = dataset.sample(config["batch_size"])
@@ -68,13 +71,18 @@ def run_offline_training_loop(config: dict, train_logger, eval_logger, args: arg
                 ep_len,
             )
             successes = [t["episode_statistics"]["s"] for t in trajectories]
+            eval_success = float(np.mean(successes))
+            best_eval_success = max(best_eval_success, eval_success)
 
             eval_logger.log(
                 {
-                    "eval/success_rate": float(np.mean(successes)),
+                    "eval/success_rate": eval_success,
+                    "eval/best_success_rate": best_eval_success,
                 },
                 step=step,
             )
+            if eval_success >= best_eval_success:
+                torch.save(agent.state_dict(), best_agent_path)
 
     
     return dump_log(agent, train_logger, eval_logger, config, args.save_dir)
@@ -160,6 +168,9 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
 
     observation, _ = env.reset()
 
+    best_eval_success = -float("inf")
+    best_agent_path = os.path.join(args.save_dir, "agent_best.pt")
+
     for step in tqdm.trange(start_step, start_step + config['online_training_steps'] + 1, dynamic_ncols=True):
         
         #TODO - Personal, could bring this back if wanted 
@@ -243,6 +254,8 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
             returns = [t["episode_statistics"]["r"] for t in trajectories]
             ep_lens = [t["episode_statistics"]["l"] for t in trajectories]
             successes = [t["episode_statistics"]["s"] for t in trajectories]
+            eval_success = float(np.mean(successes))
+            best_eval_success = max(best_eval_success, eval_success)
 
             eval_metrics = {
                 "Eval_AverageReturn": float(np.mean(returns)),
@@ -250,8 +263,11 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
                 "Eval_MaxReturn": float(np.max(returns)),
                 "Eval_MinReturn": float(np.min(returns)),
                 "Eval_AverageEpLen": float(np.mean(ep_lens)),
-                "eval/success_rate": float(np.mean(successes)),
+                "eval/success_rate": eval_success,
+                "eval/best_success_rate": best_eval_success,
             }
+            if eval_success >= best_eval_success:
+                torch.save(agent.state_dict(), best_agent_path)
 
             # Merge training metrics if available (skipped during WSRL warmup,
             # since `update_info` is only defined when the agent has been updated).
@@ -301,6 +317,8 @@ def setup_arguments(args=None):
     parser.add_argument("--log_interval", type=int, default=5000)
     parser.add_argument("--eval_interval", type=int, default=5000)
     parser.add_argument("--num_eval_trajectories", type=int, default=25)  # Should be greater than or equal to 20 to pass autograder
+    parser.add_argument("--learning_rate", type=float, default=None)
+    parser.add_argument("--target_update_rate", type=float, default=None)
     
 
     # Online retention of offline data
@@ -327,6 +345,7 @@ def setup_arguments(args=None):
     parser.add_argument("--n_critics", type=int, default=None)
     parser.add_argument("--q_pessimism_rho", type=float, default=None)
     parser.add_argument("--num_action_samples", type=int, default=None)
+    parser.add_argument("--compile_fql", action="store_true")
     parser.add_argument("--update_to_data_ratio", type=int, default=None)
     parser.add_argument("--world_model_warmup_steps", type=int, default=None)
     parser.add_argument("--synthetic_start_uncertainty_threshold", type=float, default=None)
@@ -365,6 +384,12 @@ def main(args):
         config_kwargs["q_pessimism_rho"] = args.q_pessimism_rho
     if args.num_action_samples is not None:
         config_kwargs["num_action_samples"] = args.num_action_samples
+    if args.compile_fql:
+        config_kwargs["compile_fql"] = True
+    if args.learning_rate is not None:
+        config_kwargs["learning_rate"] = args.learning_rate
+    if args.target_update_rate is not None:
+        config_kwargs["target_update_rate"] = args.target_update_rate
     config = configs.configs[args.base_config](args.env_name, **config_kwargs)
 
     # Set common config values from args for autograder
@@ -392,6 +417,12 @@ def main(args):
         exp_name = f"{exp_name}_qrho{args.q_pessimism_rho}"
     if args.num_action_samples is not None:
         exp_name = f"{exp_name}_nas{args.num_action_samples}"
+    if args.compile_fql:
+        exp_name = f"{exp_name}_compilefql"
+    if args.learning_rate is not None:
+        exp_name = f"{exp_name}_lr{args.learning_rate}"
+    if args.target_update_rate is not None:
+        exp_name = f"{exp_name}_tur{args.target_update_rate}"
     if args.update_to_data_ratio is not None:
         exp_name = f"{exp_name}_utd{args.update_to_data_ratio}"
     #add expname debug to differentiate between runs

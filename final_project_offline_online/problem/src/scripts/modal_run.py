@@ -1,6 +1,5 @@
 import os
-import time
-import argparse
+import shlex
 from pathlib import Path
 
 import modal
@@ -103,3 +102,25 @@ def offline_to_online_modal_remote(*args: str) -> None:
         # Run a single job
         main(args)
     volume.commit()
+
+
+@app.local_entrypoint()
+def main_cli(*args: str) -> None:
+    args_parsed = setup_arguments(args)
+
+    if args_parsed.njobs is not None and len(args_parsed.job_specs) > 0:
+        if args_parsed.njobs != len(args_parsed.job_specs):
+            print(
+                "Modal GPU-distributed njobs launches one remote GPU container per JOB spec. "
+                f"Received --njobs={args_parsed.njobs} for {len(args_parsed.job_specs)} specs; "
+                "all specs will be submitted."
+            )
+
+        for job_spec in args_parsed.job_specs:
+            job_args = shlex.split(job_spec)
+            assert job_args[0] == "JOB"
+            job_args = job_args[1:]
+            print(f"Submitting Modal GPU job: {job_args}")
+            offline_to_online_modal_remote.spawn(*job_args)
+    else:
+        offline_to_online_modal_remote.spawn(*args)
