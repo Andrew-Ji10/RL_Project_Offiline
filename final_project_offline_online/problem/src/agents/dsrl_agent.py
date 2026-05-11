@@ -123,11 +123,15 @@ class DSRLAgent(nn.Module):
                 if len(log_pi.shape) > 1:
                     log_pi = log_pi.sum(dim=-1)
                     
-                next_a = self.sample_flow_actions(next_observations, z * self.noise_scale)
+                # Prior log prob for KL regularization
+                base_log_prob = -0.5 * (z**2).sum(dim=-1) - 0.5 * self.action_dim * np.log(2 * np.pi)
+                kl = log_pi.view(-1) - base_log_prob.view(-1)
+                    
+                next_a = self.sample_flow_actions(next_observations, z * self.noise_scale, use_target=True)
                 q1_target, q2_target = self.target_critic(next_observations, next_a)
                 next_q = torch.min(q1_target, q2_target)
                 
-                target_q = rewards.view(-1) + self.discount * (1.0 - dones.float().view(-1)) * (next_q.view(-1) - self.alpha.detach() * log_pi.view(-1))
+                target_q = rewards.view(-1) + self.discount * (1.0 - dones.float().view(-1)) * (next_q.view(-1) - self.alpha.detach() * kl)
 
             actions = torch.clamp(actions, -1.0, 1.0)
             q1, q2 = self.critic(observations, actions)
@@ -202,7 +206,7 @@ class DSRLAgent(nn.Module):
         loss.backward()
         self.noise_actor_optimizer.step()
         
-        self.last_log_pi = kl.detach().view(-1)
+        self.last_log_pi = log_pi.detach().view(-1)
         return {"noise_actor_loss": loss.item()}
 
     def update_alpha(self) -> dict:
