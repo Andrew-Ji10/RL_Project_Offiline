@@ -42,6 +42,8 @@ class FQLAgent(nn.Module):
         target_update_rate: float,
         flow_steps: int,
         alpha: float,
+        q_pessimism_rho: Optional[float] = None,
+        num_action_samples: int = 1,
     ):
         super().__init__()
 
@@ -61,22 +63,44 @@ class FQLAgent(nn.Module):
         self.target_update_rate = target_update_rate
         self.flow_steps = flow_steps
         self.alpha = alpha
+        self.q_pessimism_rho = q_pessimism_rho
+        self.num_action_samples = num_action_samples
         self.loss_fn = nn.MSELoss()
+
+    def reduce_q_ensemble(self, q_values: torch.Tensor) -> torch.Tensor:
+        if self.q_pessimism_rho is None:
+            return q_values.min(dim=0).values
+        return q_values.mean(dim=0) - self.q_pessimism_rho * q_values.var(dim=0, unbiased=False)
+
+    @torch.no_grad()
+    def sample_actions(self, observations: torch.Tensor) -> torch.Tensor:
+        batch_size = observations.shape[0]
+        num_samples = max(int(self.num_action_samples), 1)
+
+        obs_rep = observations.unsqueeze(1).expand(batch_size, num_samples, -1).reshape(
+            batch_size * num_samples, -1
+        )
+        noise = torch.randn(batch_size * num_samples, self.action_dim, device=observations.device)
+        t0 = torch.zeros((batch_size * num_samples, 1), device=observations.device)
+        candidates = torch.clamp(noise + self.onestep_actor(obs_rep, noise, t0), -1, 1)
+
+        if num_samples == 1:
+            return candidates
+
+        q_values = self.reduce_q_ensemble(self.critic(obs_rep, candidates)).view(batch_size, num_samples)
+        best_idx = q_values.argmax(dim=1)
+        candidates = candidates.view(batch_size, num_samples, self.action_dim)
+        return candidates[torch.arange(batch_size, device=observations.device), best_idx]
 
     def get_action(self, observation: np.ndarray):
         """
         Used for evaluation.
         """
         observation = ptu.from_numpy(np.asarray(observation))[None]
-        # TODO(student): Compute the action for evaluation
-        # Hint: Unlike SAC+BC and IQL, the evaluation action is *sampled* (i.e., not the mode or mean) from the policy
-        noise = torch.randn(observation.shape[0], self.action_dim, device=observation.device)
-        t0 = torch.zeros((observation.shape[0], 1), device=observation.device)
-        action = noise + self.onestep_actor(observation, noise, t0)
-        action = torch.clamp(action, -1, 1)
+        action = self.sample_actions(observation)
         return ptu.to_numpy(action)[0]
 
-    @torch.compile
+    @torch.compiler.disable
     def get_bc_action(self, observation: torch.Tensor, noise: torch.Tensor):
         """
         Used for training.
@@ -91,7 +115,7 @@ class FQLAgent(nn.Module):
             action = action + dt * vel
         return torch.clamp(action, -1, 1)
 
-    @torch.compile
+    @torch.compiler.disable
     def update_q(
         self,
         observations: torch.Tensor,
@@ -108,11 +132,8 @@ class FQLAgent(nn.Module):
         # Hint: Use the one-step actor to compute next actions
         # Hint: Remember to clamp the actions to be in [-1, 1] when feeding them to the critic!
         with torch.no_grad():
-            noise = torch.randn(next_observations.shape[0], self.action_dim, device=next_observations.device)
-            t = torch.zeros((next_observations.shape[0], 1), device=next_observations.device)
-            next_action = torch.clamp(noise + self.onestep_actor(next_observations, noise, t), -1, 1)
-
-            q_next = self.target_critic(next_observations, next_action).min(dim=0).values
+            next_action = self.sample_actions(next_observations)
+            q_next = self.reduce_q_ensemble(self.target_critic(next_observations, next_action))
             target_q = rewards + self.discount * (1 - dones) * q_next
         
         actions = torch.clamp(actions, -1, 1)
@@ -130,7 +151,7 @@ class FQLAgent(nn.Module):
             "q_min": q.min(),
         }
 
-    @torch.compile
+    @torch.compiler.disable
     def update_bc_actor(
         self,
         observations: torch.Tensor,
@@ -156,7 +177,7 @@ class FQLAgent(nn.Module):
             "loss": loss,
         }
 
-    @torch.compile
+    @torch.compiler.disable
     def update_onestep_actor(
         self,
         observations: torch.Tensor,
@@ -177,7 +198,7 @@ class FQLAgent(nn.Module):
 
         # Hint: *Do* clip the one-step actor actions when feeding them to the critic
         clipped = torch.clamp(pred, -1, 1)
-        q_val = self.critic(observations, clipped)
+        q_val = self.reduce_q_ensemble(self.critic(observations, clipped))
         q_loss = -weighted_mean(q_val, sample_weights)
 
         # Total loss.

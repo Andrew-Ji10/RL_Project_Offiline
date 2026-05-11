@@ -91,12 +91,17 @@ def setup_arguments(args=None):
     parser.add_argument("--expectile", type=float, default=None)
     parser.add_argument("--alpha", type=float, default=None)
     parser.add_argument("--lower_agent", type=str, default=None, choices=["fql", "ifql", "sacbc"])
+    parser.add_argument("--n_critics", type=int, default=None)
+    parser.add_argument("--q_pessimism_rho", type=float, default=None)
+    parser.add_argument("--num_action_samples", type=int, default=None)
     parser.add_argument("--world_model_warmup_steps", type=int, default=None)
     parser.add_argument("--synthetic_start_uncertainty_threshold", type=float, default=None)
     parser.add_argument("--initial_synthetic_ratio", type=float, default=None)
     parser.add_argument("--synthetic_ratio", type=float, default=None)
     parser.add_argument("--synthetic_ratio_ramp_rate", type=float, default=None)
     parser.add_argument("--synthetic_uncertainty_weight_coef", type=float, default=None)
+    parser.add_argument("--uncertainty_penalty", type=float, default=None)
+    parser.add_argument("--uncertainty_threshold", type=float, default=None)
 
     # For njobs mode (optional)
     parser.add_argument("--njobs", type=int, default=None)
@@ -114,6 +119,12 @@ def main(args):
     config_kwargs = {}
     if args.lower_agent is not None:
         config_kwargs["lower_agent"] = args.lower_agent
+    if args.n_critics is not None:
+        config_kwargs["n_critics"] = args.n_critics
+    if args.q_pessimism_rho is not None:
+        config_kwargs["q_pessimism_rho"] = args.q_pessimism_rho
+    if args.num_action_samples is not None:
+        config_kwargs["num_action_samples"] = args.num_action_samples
     config = configs.configs[args.base_config](args.env_name, **config_kwargs)
 
     # Set common config values from args for autograder
@@ -127,6 +138,12 @@ def main(args):
     exp_name = f"sd{args.seed}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{config['log_name']}"
     if args.lower_agent is not None:
         exp_name = f"{exp_name}_lower{args.lower_agent}"
+    if args.n_critics is not None:
+        exp_name = f"{exp_name}_nc{args.n_critics}"
+    if args.q_pessimism_rho is not None:
+        exp_name = f"{exp_name}_qrho{args.q_pessimism_rho}"
+    if args.num_action_samples is not None:
+        exp_name = f"{exp_name}_nas{args.num_action_samples}"
 
     # Override agent hyperparameters if specified
     if args.expectile is not None:
@@ -171,6 +188,14 @@ def main(args):
         config["agent_kwargs"]["synthetic_uncertainty_weight_coef"] = args.synthetic_uncertainty_weight_coef
         config["synthetic_uncertainty_weight_coef"] = args.synthetic_uncertainty_weight_coef
         exp_name = f"{exp_name}_suw{args.synthetic_uncertainty_weight_coef}"
+    if args.uncertainty_penalty is not None and "uncertainty_penalty" in config["agent_kwargs"]:
+        config["agent_kwargs"]["uncertainty_penalty"] = args.uncertainty_penalty
+        config["uncertainty_penalty"] = args.uncertainty_penalty
+        exp_name = f"{exp_name}_up{args.uncertainty_penalty}"
+    if args.uncertainty_threshold is not None and "uncertainty_threshold" in config["agent_kwargs"]:
+        config["agent_kwargs"]["uncertainty_threshold"] = args.uncertainty_threshold
+        config["uncertainty_threshold"] = args.uncertainty_threshold
+        exp_name = f"{exp_name}_uth{args.uncertainty_threshold}"
 
     setup_wandb(project='cs285_offline_online_proj', name=exp_name, group=args.run_group, config=config)
     args.save_dir = os.path.join(logdir_prefix, args.run_group, exp_name)

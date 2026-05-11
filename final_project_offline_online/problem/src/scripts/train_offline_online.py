@@ -206,18 +206,24 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
         #     # TODO(Section 3.1): Sample a batch of config["batch_size"] transitions from the replay buffer
         # change for warmstart compatibility
         if buffer_warm and not in_warmup:
-            batch = replay_buffer.sample(config['batch_size'])
-            batch = {
-                k: ptu.from_numpy(v) if isinstance(v, np.ndarray) else v for k, v in batch.items()
-            }
+            update_infos = []
+            for utd_idx in range(int(config.get("update_to_data_ratio", 1))):
+                batch = replay_buffer.sample(config['batch_size'])
+                batch = {
+                    k: ptu.from_numpy(v) if isinstance(v, np.ndarray) else v for k, v in batch.items()
+                }
 
-            update_info = agent.update(
-                observations = batch["observations"], 
-                actions = batch["actions"], 
-                rewards = batch['rewards'], 
-                next_observations = batch['next_observations'], 
-                dones = batch['dones'], 
-                step = step)
+                update_infos.append(agent.update(
+                    observations = batch["observations"],
+                    actions = batch["actions"],
+                    rewards = batch['rewards'],
+                    next_observations = batch['next_observations'],
+                    dones = batch['dones'],
+                    step = step))
+            update_info = {
+                k: float(np.mean([info[k] for info in update_infos]))
+                for k in update_infos[-1]
+            }
             # ENDTODO
 
             # Logging
@@ -292,8 +298,8 @@ def setup_arguments(args=None):
     parser.add_argument("--offline_training_steps", type=int, default=500000)  # Should be 500k to pass the autograder
     parser.add_argument("--online_training_steps", type=int, default=100000)  # Should be 100k to pass the autograder
     parser.add_argument("--replay_buffer_capacity", type=int, default=1000000)
-    parser.add_argument("--log_interval", type=int, default=20000)
-    parser.add_argument("--eval_interval", type=int, default=20000)
+    parser.add_argument("--log_interval", type=int, default=5000)
+    parser.add_argument("--eval_interval", type=int, default=5000)
     parser.add_argument("--num_eval_trajectories", type=int, default=25)  # Should be greater than or equal to 20 to pass autograder
     
 
@@ -318,12 +324,18 @@ def setup_arguments(args=None):
     # FQL / QSM
     parser.add_argument("--alpha", type=float, default=None)
     parser.add_argument("--lower_agent", type=str, default=None, choices=["fql", "ifql", "sacbc"])
+    parser.add_argument("--n_critics", type=int, default=None)
+    parser.add_argument("--q_pessimism_rho", type=float, default=None)
+    parser.add_argument("--num_action_samples", type=int, default=None)
+    parser.add_argument("--update_to_data_ratio", type=int, default=None)
     parser.add_argument("--world_model_warmup_steps", type=int, default=None)
     parser.add_argument("--synthetic_start_uncertainty_threshold", type=float, default=None)
     parser.add_argument("--initial_synthetic_ratio", type=float, default=None)
     parser.add_argument("--synthetic_ratio", type=float, default=None)
     parser.add_argument("--synthetic_ratio_ramp_rate", type=float, default=None)
     parser.add_argument("--synthetic_uncertainty_weight_coef", type=float, default=None)
+    parser.add_argument("--uncertainty_penalty", type=float, default=None)
+    parser.add_argument("--uncertainty_threshold", type=float, default=None)
 
     # QSM
     parser.add_argument("--inv_temp", type=float, default=None)
@@ -347,6 +359,12 @@ def main(args):
     config_kwargs = {}
     if args.lower_agent is not None:
         config_kwargs["lower_agent"] = args.lower_agent
+    if args.n_critics is not None:
+        config_kwargs["n_critics"] = args.n_critics
+    if args.q_pessimism_rho is not None:
+        config_kwargs["q_pessimism_rho"] = args.q_pessimism_rho
+    if args.num_action_samples is not None:
+        config_kwargs["num_action_samples"] = args.num_action_samples
     config = configs.configs[args.base_config](args.env_name, **config_kwargs)
 
     # Set common config values from args for autograder
@@ -363,10 +381,19 @@ def main(args):
     config["training_starts"] = 10000 # HW 3 sac_config.py
     config["offline_data"] = args.offline_data #4.1 offline data
     config["wsrl_steps"] = args.wsrl_steps #4.2 WSRL
+    config["update_to_data_ratio"] = args.update_to_data_ratio or config.get("update_to_data_ratio", 1)
 
     exp_name = f"sd{args.seed}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{config['log_name']}"
     if args.lower_agent is not None:
         exp_name = f"{exp_name}_lower{args.lower_agent}"
+    if args.n_critics is not None:
+        exp_name = f"{exp_name}_nc{args.n_critics}"
+    if args.q_pessimism_rho is not None:
+        exp_name = f"{exp_name}_qrho{args.q_pessimism_rho}"
+    if args.num_action_samples is not None:
+        exp_name = f"{exp_name}_nas{args.num_action_samples}"
+    if args.update_to_data_ratio is not None:
+        exp_name = f"{exp_name}_utd{args.update_to_data_ratio}"
     #add expname debug to differentiate between runs
     if args.offline_data > 0:
         exp_name = f"{exp_name}_od{args.offline_data}"
@@ -416,6 +443,14 @@ def main(args):
         config["agent_kwargs"]["synthetic_uncertainty_weight_coef"] = args.synthetic_uncertainty_weight_coef
         config["synthetic_uncertainty_weight_coef"] = args.synthetic_uncertainty_weight_coef
         exp_name = f"{exp_name}_suw{args.synthetic_uncertainty_weight_coef}"
+    if args.uncertainty_penalty is not None and "uncertainty_penalty" in config["agent_kwargs"]:
+        config["agent_kwargs"]["uncertainty_penalty"] = args.uncertainty_penalty
+        config["uncertainty_penalty"] = args.uncertainty_penalty
+        exp_name = f"{exp_name}_up{args.uncertainty_penalty}"
+    if args.uncertainty_threshold is not None and "uncertainty_threshold" in config["agent_kwargs"]:
+        config["agent_kwargs"]["uncertainty_threshold"] = args.uncertainty_threshold
+        config["uncertainty_threshold"] = args.uncertainty_threshold
+        exp_name = f"{exp_name}_uth{args.uncertainty_threshold}"
     if args.inv_temp is not None:
         config['agent_kwargs']['inv_temp'] = args.inv_temp
         exp_name = f"{exp_name}_i{args.inv_temp}"

@@ -27,6 +27,9 @@ def world_model_config(
     flow_steps: int = 10,
     expectile: float = 0.9,
     num_samples: int = 32,
+    n_critics: int = 2,
+    q_pessimism_rho: Optional[float] = None,
+    num_action_samples: int = 1,
     world_model_hidden_size: int = 512,
     world_model_num_layers: int = 3,
     world_model_learning_rate: float = 3e-4,
@@ -67,6 +70,10 @@ def world_model_config(
         lower_kwargs["flow_steps"] = flow_steps
     if lower_agent in ("fql", "sacbc"):
         lower_kwargs["alpha"] = alpha
+    if lower_agent == "fql":
+        lower_kwargs["n_critics"] = n_critics
+        lower_kwargs["q_pessimism_rho"] = q_pessimism_rho
+        lower_kwargs["num_action_samples"] = num_action_samples
     if lower_agent == "ifql":
         lower_kwargs["expectile"] = expectile
         lower_kwargs["num_samples"] = num_samples
@@ -109,6 +116,9 @@ def world_model_config(
         "hidden_size": hidden_size,
         "num_layers": num_layers,
         "learning_rate": learning_rate,
+        "n_critics": n_critics,
+        "q_pessimism_rho": q_pessimism_rho,
+        "num_action_samples": num_action_samples,
         "world_model_hidden_size": world_model_hidden_size,
         "world_model_num_layers": world_model_num_layers,
         "world_model_learning_rate": world_model_learning_rate,

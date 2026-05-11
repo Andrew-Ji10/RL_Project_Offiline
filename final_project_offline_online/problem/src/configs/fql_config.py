@@ -23,6 +23,9 @@ def fql_config(
     target_update_rate: float = 0.005,
     flow_steps: int = 10,
     alpha: float = 1.0,
+    n_critics: int = 2,
+    q_pessimism_rho: Optional[float] = None,
+    num_action_samples: int = 1,
     total_steps: int = 1000000,
     batch_size: int = 256,
     **kwargs,
@@ -49,7 +52,7 @@ def fql_config(
             ac_dim=action_dim,
             n_layers=num_layers,
             size=hidden_size,
-            n_ensembles=2,
+            n_ensembles=n_critics,
         )
 
     def make_optimizer(params: torch.nn.ParameterList) -> torch.optim.Optimizer:
@@ -83,6 +86,8 @@ def fql_config(
             "target_update_rate": target_update_rate,
             "flow_steps": flow_steps,
             "alpha": alpha,
+            "q_pessimism_rho": q_pessimism_rho,
+            "num_action_samples": num_action_samples,
         },
         "agent": "fql",
         "log_name": log_string,
@@ -93,6 +98,9 @@ def fql_config(
         "hidden_size": hidden_size,
         "num_layers": num_layers,
         "learning_rate": learning_rate,
+        "n_critics": n_critics,
+        "q_pessimism_rho": q_pessimism_rho,
+        "num_action_samples": num_action_samples,
         **kwargs,
     }
 

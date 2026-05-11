@@ -152,10 +152,7 @@ class WorldModelAgent(nn.Module):
             return self.lower_agent.sample_actions(observations)
 
         if self.lower_agent_name == "fql":
-            noise = torch.randn(observations.shape[0], self.action_dim, device=observations.device)
-            t = torch.zeros((observations.shape[0], 1), device=observations.device)
-            action = noise + self.lower_agent.onestep_actor(observations, noise, t)
-            return torch.clamp(action, -1.0, 1.0)
+            return self.lower_agent.sample_actions(observations)
 
         action_dist = self.lower_agent.actor(observations)
         return torch.clamp(action_dist.sample(), -1.0, 1.0)
