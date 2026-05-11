@@ -130,7 +130,10 @@ def main(args):
 
     # Override agent hyperparameters if specified
     if args.expectile is not None:
-        config['agent_kwargs']['expectile'] = args.expectile
+        if "expectile" in config["agent_kwargs"]:
+            config['agent_kwargs']['expectile'] = args.expectile
+        elif "expectile" in config["agent_kwargs"].get("lower_agent_kwargs", {}):
+            config["agent_kwargs"]["lower_agent_kwargs"]["expectile"] = args.expectile
         exp_name = f"{exp_name}_e{args.expectile}"
     if args.alpha is not None:
         if "alpha" in config["agent_kwargs"]:
