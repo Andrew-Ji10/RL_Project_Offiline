@@ -111,7 +111,7 @@ def run_offline_training_loop(config: dict, train_logger, eval_logger, args: arg
     ep_len = env.spec.max_episode_steps or env.max_episode_steps
 
     best_eval_success = -float("inf")
-    best_agent_path = os.path.join(args.save_dir, "agent_best.pt")
+    offline_final_path = os.path.join(args.save_dir, "agent_offline_final.pt")
 
     for step in tqdm.trange(config["offline_training_steps"] + 1, dynamic_ncols=True):
         # Train with offline RL
@@ -152,11 +152,10 @@ def run_offline_training_loop(config: dict, train_logger, eval_logger, args: arg
                 },
                 step=step,
             )
-            if eval_success >= best_eval_success:
-                torch.save(agent.state_dict(), best_agent_path)
 
-    
-    return dump_log(agent, train_logger, eval_logger, config, args.save_dir)
+    torch.save(agent.state_dict(), offline_final_path)
+    dump_log(agent, train_logger, eval_logger, config, args.save_dir)
+    return offline_final_path
 
 def run_online_training_loop(config: dict, train_logger, eval_logger, args: argparse.Namespace, agent_path: str, start_step: int = 0):
     """
@@ -251,7 +250,7 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
     observation, _ = env.reset()
 
     best_eval_success = -float("inf")
-    best_agent_path = os.path.join(args.save_dir, "agent_best.pt")
+    online_final_path = os.path.join(args.save_dir, "agent_online_final.pt")
 
     for step in tqdm.trange(start_step, start_step + config['online_training_steps'] + 1, dynamic_ncols=True):
         
@@ -348,8 +347,6 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
                 "eval/success_rate": eval_success,
                 "eval/best_success_rate": best_eval_success,
             }
-            if eval_success >= best_eval_success:
-                torch.save(agent.state_dict(), best_agent_path)
 
             # Merge training metrics if available (skipped during WSRL warmup,
             # since `update_info` is only defined when the agent has been updated).
@@ -380,7 +377,9 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
 
 
 
-    return dump_log(agent, train_logger, eval_logger, config, args.save_dir)
+    torch.save(agent.state_dict(), online_final_path)
+    dump_log(agent, train_logger, eval_logger, config, args.save_dir)
+    return online_final_path
 
 
 
@@ -395,6 +394,12 @@ def setup_arguments(args=None):
     parser.add_argument("--which_gpu", default=0)
     parser.add_argument("--offline_training_steps", type=int, default=500000)  # Should be 500k to pass the autograder
     parser.add_argument("--online_training_steps", type=int, default=100000)  # Should be 100k to pass the autograder
+    parser.add_argument(
+        "--offline_agent_path",
+        type=str,
+        default=None,
+        help="Path to a saved offline-final agent checkpoint to load before online training.",
+    )
     parser.add_argument("--replay_buffer_capacity", type=int, default=1000000)
     parser.add_argument("--log_interval", type=int, default=5000)
     parser.add_argument("--eval_interval", type=int, default=5000)
@@ -551,6 +556,8 @@ def main(args):
         exp_name = f"{exp_name}_osuth{args.online_synthetic_start_uncertainty_threshold}"
     if args.warmstart_steps > 0:
         exp_name = f"{exp_name}_ws{args.warmstart_steps}"
+    if args.offline_agent_path is not None:
+        exp_name = f"{exp_name}_loadoffline"
 
     # Override agent hyperparameters if specified
     if args.expectile is not None:
@@ -621,13 +628,15 @@ def main(args):
     eval_logger = Logger(os.path.join(args.save_dir, 'eval.csv'))
 
     start_step = 0
-    agent_path_offline = None
+    agent_path_offline = args.offline_agent_path
     if args.offline_training_steps > 0:
         print(f"Running offline training loop with {args.offline_training_steps} steps")
         # TODO(student): Implement offline training loop
         # Hint: You might consider passing the agent's path to the online training loop
         agent_path_offline = run_offline_training_loop(config, train_logger, eval_logger, args, start_step=0)
         start_step = args.offline_training_steps
+    elif args.offline_agent_path is not None:
+        print(f"Skipping offline training; loading offline agent from {args.offline_agent_path}")
         
     
     if args.online_training_steps > 0:
