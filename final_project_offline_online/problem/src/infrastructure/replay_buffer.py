@@ -21,6 +21,43 @@ class ReplayBuffer:
             "dones": self.dones[rand_indices],
         }
 
+    def sample_chunk(self, batch_size: int, chunk_size: int, discount: float = 0.99):
+        """Sample K-step action chunks by aggregating consecutive transitions."""
+        if chunk_size == 1:
+            return self.sample(batch_size)
+
+        max_valid = self.size - chunk_size
+        if max_valid <= 0:
+            return self.sample(batch_size)
+
+        rand_starts = np.random.randint(0, max_valid, size=(batch_size,))
+        start_idx = rand_starts % self.max_size
+
+        obs = self.observations[start_idx].copy()
+        action_chunks = []
+        cum_rewards = np.zeros(batch_size, dtype=np.float32)
+        alive = np.ones(batch_size, dtype=np.float32)
+        final_next_obs = self.next_observations[start_idx].copy()
+        final_dones = np.zeros(batch_size, dtype=np.float32)
+
+        for k in range(chunk_size):
+            idx = (rand_starts + k) % self.max_size
+            action_chunks.append(self.actions[idx].copy())
+            cum_rewards += alive * (discount ** k) * self.rewards[idx]
+            alive_mask = alive > 0
+            final_next_obs[alive_mask] = self.next_observations[idx[alive_mask]]
+            done_now = self.dones[idx].astype(np.float32)
+            final_dones = np.maximum(final_dones, alive * done_now)
+            alive = alive * (1.0 - done_now)
+
+        return {
+            "observations": obs,
+            "actions": np.concatenate(action_chunks, axis=-1),
+            "rewards": cum_rewards,
+            "next_observations": final_next_obs,
+            "dones": final_dones,
+        }
+
     def __len__(self):
         return self.size
 

@@ -27,6 +27,7 @@ def fql_config(
     q_pessimism_rho: Optional[float] = None,
     num_action_samples: int = 1,
     compile_fql: bool = False,
+    action_chunk_size: int = 1,
     total_steps: int = 1000000,
     batch_size: int = 256,
     **kwargs,
@@ -90,6 +91,7 @@ def fql_config(
             "q_pessimism_rho": q_pessimism_rho,
             "num_action_samples": num_action_samples,
             "compile_fql": compile_fql,
+            "action_chunk_size": action_chunk_size,
         },
         "agent": "fql",
         "log_name": log_string,
@@ -104,6 +106,8 @@ def fql_config(
         "q_pessimism_rho": q_pessimism_rho,
         "num_action_samples": num_action_samples,
         "compile_fql": compile_fql,
+        "action_chunk_size": action_chunk_size,
+        "discount": discount,
         **kwargs,
     }
 

@@ -49,6 +49,7 @@ def world_model_config(
     synthetic_discount: float = 0.99,
     utd_ratio: int = 1,
     td_error_threshold: float = 1.0,
+    action_chunk_size: int = 1,
     total_steps: int = 1000000,
     batch_size: int = 256,
     **kwargs,
@@ -78,6 +79,7 @@ def world_model_config(
         lower_kwargs["q_pessimism_rho"] = q_pessimism_rho
         lower_kwargs["num_action_samples"] = num_action_samples
         lower_kwargs["compile_fql"] = compile_fql
+        lower_kwargs["action_chunk_size"] = action_chunk_size
     if lower_agent == "ifql":
         lower_kwargs["expectile"] = expectile
         lower_kwargs["num_samples"] = num_samples
@@ -140,6 +142,8 @@ def world_model_config(
         "uncertainty_penalty": uncertainty_penalty,
         "uncertainty_threshold": uncertainty_threshold,
         "return_threshold": return_threshold,
+        "action_chunk_size": action_chunk_size,
+        "discount": 0.99,
         **kwargs,
     }
 

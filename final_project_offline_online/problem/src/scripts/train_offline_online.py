@@ -44,7 +44,9 @@ def run_offline_training_loop(config: dict, train_logger, eval_logger, args: arg
 
     for step in tqdm.trange(config["offline_training_steps"] + 1, dynamic_ncols=True):
         # Train with offline RL
-        batch = dataset.sample(config["batch_size"])
+        chunk_size = config.get("action_chunk_size", 1)
+        chunk_discount = config.get("discount", 0.99)
+        batch = dataset.sample_chunk(config["batch_size"], chunk_size, chunk_discount)
 
         batch = {
             k: ptu.from_numpy(v) if isinstance(v, np.ndarray) else v for k, v in batch.items()
@@ -180,18 +182,43 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
         #     # TODO(Section 3.1): Select an action
         #     action = agent.get_action(observation)
         #     # ENDTODO
-        action = agent.get_action(observation)
+        chunk_size = config.get("action_chunk_size", 1)
+        chunk_discount = config.get("discount", 0.99)
+        ac_dim = env.action_space.shape[0]
 
-        # Step the environment and add the data to the replay buffer
-        next_observation, reward, terminated, truncated, info = env.step(action)
-        done = terminated or truncated
-        replay_buffer.insert(
-            observation=observation,
-            action=action,
-            reward=reward,
-            next_observation=next_observation,
-            done=done and not truncated,
-        )
+        if chunk_size > 1 and hasattr(agent, "get_action_chunk"):
+            action_chunk = agent.get_action_chunk(observation)
+            cum_reward = 0.0
+            done = False
+            truncated = False
+            final_obs = observation
+            for k in range(chunk_size):
+                ac = action_chunk[k * ac_dim:(k + 1) * ac_dim]
+                next_observation, reward, terminated, truncated, info = env.step(ac)
+                done = terminated or truncated
+                cum_reward += (chunk_discount ** k) * reward
+                final_obs = next_observation
+                if done:
+                    break
+            replay_buffer.insert(
+                observation=observation,
+                action=action_chunk,
+                reward=cum_reward,
+                next_observation=final_obs,
+                done=done and not truncated,
+            )
+            next_observation = final_obs
+        else:
+            action = agent.get_action(observation)
+            next_observation, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+            replay_buffer.insert(
+                observation=observation,
+                action=action,
+                reward=reward,
+                next_observation=next_observation,
+                done=done and not truncated,
+            )
 
         if done:
             episode_info = info.get("episode", {})
@@ -218,8 +245,10 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
         # change for warmstart compatibility
         if buffer_warm and not in_warmup:
             update_infos = []
+            _chunk_size = config.get("action_chunk_size", 1)
+            _chunk_discount = config.get("discount", 0.99)
             for utd_idx in range(int(config.get("update_to_data_ratio", 1))):
-                batch = replay_buffer.sample(config['batch_size'])
+                batch = replay_buffer.sample_chunk(config['batch_size'], _chunk_size, _chunk_discount)
                 batch = {
                     k: ptu.from_numpy(v) if isinstance(v, np.ndarray) else v for k, v in batch.items()
                 }
@@ -357,6 +386,7 @@ def setup_arguments(args=None):
     parser.add_argument("--uncertainty_threshold", type=float, default=None)
     parser.add_argument("--utd_ratio", type=int, default=None)
     parser.add_argument("--td_error_threshold", type=float, default=None)
+    parser.add_argument("--action_chunk_size", type=int, default=None)
 
     # QSM
     parser.add_argument("--inv_temp", type=float, default=None)
@@ -492,6 +522,14 @@ def main(args):
         config["agent_kwargs"]["td_error_threshold"] = args.td_error_threshold
         config["td_error_threshold"] = args.td_error_threshold
         exp_name = f"{exp_name}_tdet{args.td_error_threshold}"
+    if args.action_chunk_size is not None:
+        config["action_chunk_size"] = args.action_chunk_size
+        # push into agent_kwargs (direct FQL) or lower_agent_kwargs (world model+FQL)
+        if "action_chunk_size" in config["agent_kwargs"]:
+            config["agent_kwargs"]["action_chunk_size"] = args.action_chunk_size
+        elif "action_chunk_size" in config["agent_kwargs"].get("lower_agent_kwargs", {}):
+            config["agent_kwargs"]["lower_agent_kwargs"]["action_chunk_size"] = args.action_chunk_size
+        exp_name = f"{exp_name}_ck{args.action_chunk_size}"
     if args.inv_temp is not None:
         config['agent_kwargs']['inv_temp'] = args.inv_temp
         exp_name = f"{exp_name}_i{args.inv_temp}"

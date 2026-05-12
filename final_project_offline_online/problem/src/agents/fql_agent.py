@@ -45,15 +45,18 @@ class FQLAgent(nn.Module):
         q_pessimism_rho: Optional[float] = None,
         num_action_samples: int = 1,
         compile_fql: bool = False,
+        action_chunk_size: int = 1,
     ):
         super().__init__()
 
         self.action_dim = action_dim
+        self.chunk_size = action_chunk_size
+        self.chunk_action_dim = action_dim * action_chunk_size
 
-        self.bc_actor = make_bc_actor(observation_shape, action_dim)
-        self.onestep_actor = make_onestep_actor(observation_shape, action_dim)
-        self.critic = make_critic(observation_shape, action_dim)
-        self.target_critic = make_critic(observation_shape, action_dim)
+        self.bc_actor = make_bc_actor(observation_shape, self.chunk_action_dim)
+        self.onestep_actor = make_onestep_actor(observation_shape, self.chunk_action_dim)
+        self.critic = make_critic(observation_shape, self.chunk_action_dim)
+        self.target_critic = make_critic(observation_shape, self.chunk_action_dim)
         self.target_critic.load_state_dict(self.critic.state_dict())
 
         self.bc_actor_optimizer = make_bc_actor_optimizer(self.bc_actor.parameters())
@@ -87,13 +90,14 @@ class FQLAgent(nn.Module):
 
     @torch.no_grad()
     def sample_actions(self, observations: torch.Tensor) -> torch.Tensor:
+        """Returns the best action chunk (B, chunk_action_dim)."""
         batch_size = observations.shape[0]
         num_samples = max(int(self.num_action_samples), 1)
 
         obs_rep = observations.unsqueeze(1).expand(batch_size, num_samples, -1).reshape(
             batch_size * num_samples, -1
         )
-        noise = torch.randn(batch_size * num_samples, self.action_dim, device=observations.device)
+        noise = torch.randn(batch_size * num_samples, self.chunk_action_dim, device=observations.device)
         t0 = torch.zeros((batch_size * num_samples, 1), device=observations.device)
         candidates = torch.clamp(noise + self.onestep_actor(obs_rep, noise, t0), -1, 1)
 
@@ -102,16 +106,20 @@ class FQLAgent(nn.Module):
 
         q_values = self.reduce_q_ensemble(self.critic(obs_rep, candidates)).view(batch_size, num_samples)
         best_idx = q_values.argmax(dim=1)
-        candidates = candidates.view(batch_size, num_samples, self.action_dim)
+        candidates = candidates.view(batch_size, num_samples, self.chunk_action_dim)
         return candidates[torch.arange(batch_size, device=observations.device), best_idx]
 
     def get_action(self, observation: np.ndarray):
-        """
-        Used for evaluation.
-        """
+        """Used for evaluation — returns only the first action of the chunk."""
         observation = ptu.from_numpy(np.asarray(observation))[None]
-        action = self.sample_actions(observation)
-        return ptu.to_numpy(action)[0]
+        chunk = self.sample_actions(observation)
+        return ptu.to_numpy(chunk[0, :self.action_dim])
+
+    def get_action_chunk(self, observation: np.ndarray) -> np.ndarray:
+        """Returns the full K-action chunk for online env collection."""
+        observation = ptu.from_numpy(np.asarray(observation))[None]
+        chunk = self.sample_actions(observation)
+        return ptu.to_numpy(chunk[0])
 
     def get_bc_action(self, observation: torch.Tensor, noise: torch.Tensor):
         return self.get_bc_action_impl(observation, noise)
@@ -157,9 +165,11 @@ class FQLAgent(nn.Module):
         # Hint: Use the one-step actor to compute next actions
         # Hint: Remember to clamp the actions to be in [-1, 1] when feeding them to the critic!
         with torch.no_grad():
-            next_action = self.sample_actions(next_observations)
-            q_next = self.reduce_q_ensemble(self.target_critic(next_observations, next_action))
-            target_q = rewards + self.discount * (1.0 - dones.float()) * q_next
+            next_chunk = self.sample_actions(next_observations)
+            q_next = self.reduce_q_ensemble(self.target_critic(next_observations, next_chunk))
+            # discount^K for K-step chunk returns
+            bootstrap_discount = self.discount ** self.chunk_size
+            target_q = rewards + bootstrap_discount * (1.0 - dones.float()) * q_next
         
         actions = torch.clamp(actions, -1, 1)
         q = self.critic(observations, actions)
@@ -228,7 +238,7 @@ class FQLAgent(nn.Module):
         """
         # TODO(student): Compute the one-step actor loss
         # Hint: Do *not* clip the one-step actor actions when computing the distillation loss
-        noise = torch.randn_like(actions)
+        noise = torch.randn(actions.shape[0], self.chunk_action_dim, device=actions.device)
         with torch.no_grad():
             bc_action = self.get_bc_action(observations, noise)
         t0 = torch.zeros((actions.shape[0], 1), device=actions.device)

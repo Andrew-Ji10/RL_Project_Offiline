@@ -159,7 +159,9 @@ class WorldModelAgent(nn.Module):
             return self.lower_agent.sample_actions(observations)
 
         if self.lower_agent_name == "fql":
-            return self.lower_agent.sample_actions(observations)
+            # sample_actions returns full chunk (B, K*ac_dim); world model needs single actions
+            chunk = self.lower_agent.sample_actions(observations)
+            return chunk[:, :self.action_dim]
 
         action_dist = self.lower_agent.actor(observations)
         return torch.clamp(action_dist.sample(), -1.0, 1.0)
@@ -304,7 +306,9 @@ class WorldModelAgent(nn.Module):
         dones: torch.Tensor,
         step: int,
     ):
-        model_metrics = self.update_world_model(observations, actions, rewards, next_observations)
+        # World model is single-step; slice first action from chunk if chunking is active
+        single_actions = actions[:, :self.action_dim] if actions.shape[-1] > self.action_dim else actions
+        model_metrics = self.update_world_model(observations, single_actions, rewards, next_observations)
 
         warmup_gate_open = step >= self.world_model_warmup_steps
 
