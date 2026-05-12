@@ -15,6 +15,77 @@ from infrastructure.log_utils import setup_wandb, Logger, dump_log
 from infrastructure.replay_buffer import ReplayBuffer
 
 
+def set_agent_alpha(agent, alpha: float) -> None:
+    """
+    Sets alpha on agent, descending into WorldModelAgent's lower_agent if needed.
+
+    Lower alpha online = less BC anchoring = more aggressive Q-maximization.
+    Higher alpha online = more conservative = stays closer to offline policy.
+    Recommendation: use a LOWER alpha online than offline for FQL/SAC+BC, since
+    real environment feedback replaces the need for behavioral regularization.
+    """
+    target = getattr(agent, 'lower_agent', agent)
+    if hasattr(target, 'alpha'):
+        print(f"[online] alpha {target.alpha} -> {alpha}")
+        target.alpha = alpha
+
+
+def set_world_model_thresholds(
+    agent,
+    uncertainty_threshold: float = None,
+    synthetic_start_uncertainty_threshold: float = None,
+) -> None:
+    """
+    Updates world model uncertainty thresholds at the start of online training.
+
+    Online, the world model has seen more diverse data, so you can afford to
+    RAISE uncertainty_threshold (accept more synthetic data) or LOWER
+    synthetic_start_uncertainty_threshold (start using synthetic data sooner).
+    """
+    if not hasattr(agent, 'uncertainty_threshold'):
+        return
+    if uncertainty_threshold is not None:
+        print(f"[online] uncertainty_threshold {agent.uncertainty_threshold} -> {uncertainty_threshold}")
+        agent.uncertainty_threshold = uncertainty_threshold
+    if synthetic_start_uncertainty_threshold is not None:
+        print(f"[online] synthetic_start_uncertainty_threshold "
+              f"{agent.synthetic_start_uncertainty_threshold} -> {synthetic_start_uncertainty_threshold}")
+        agent.synthetic_start_uncertainty_threshold = synthetic_start_uncertainty_threshold
+
+
+def warmstart_replay_buffer(
+    agent,
+    env,
+    replay_buffer: ReplayBuffer,
+    n_steps: int,
+) -> None:
+    """
+    Pre-fills the replay buffer with offline-policy rollouts before online training begins.
+
+    This does NOT count toward the online training budget — it runs entirely before
+    the main loop. Most useful for FQL, whose one-step actor benefits from a warm
+    buffer to avoid early-training distribution collapse when BC regularization is
+    reduced for online fine-tuning. Can be combined with --wsrl_steps or used alone.
+    """
+    if n_steps <= 0:
+        return
+    observation, _ = env.reset()
+    print(f"[warmstart] Collecting {n_steps} transitions from offline policy.")
+    for _ in tqdm.trange(n_steps, desc="Warmstart", dynamic_ncols=True):
+        action = agent.get_action(observation)
+        next_obs, reward, terminated, truncated, _ = env.step(action)
+        done = terminated or truncated
+        replay_buffer.insert(
+            observation=observation,
+            action=action,
+            reward=reward,
+            next_observation=next_obs,
+            done=done and not truncated,
+        )
+        observation = next_obs if not done else env.reset()[0]
+    print(f"[warmstart] Buffer size after warmstart: {len(replay_buffer)}")
+
+
 def run_offline_training_loop(config: dict, train_logger, eval_logger, args: argparse.Namespace, start_step: int = 0):
     """
     Run offline training loop
@@ -117,6 +188,15 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
         agent.load_state_dict(torch.load(agent_path))
     # load agent (end)
 
+    # Apply online-phase overrides after loading offline weights
+    online_alpha = config.get("online_alpha")
+    if online_alpha is not None:
+        set_agent_alpha(agent, online_alpha)
+
+    online_uth = config.get("online_uncertainty_threshold")
+    online_suth = config.get("online_synthetic_start_uncertainty_threshold")
+    if online_uth is not None or online_suth is not None:
+        set_world_model_thresholds(agent, online_uth, online_suth)
 
     # render_env = config["make_env"](eval=True, render=True)
 
@@ -165,6 +245,8 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
                 done=bool(d),
             )
         print(f"[s2_offline] Seeded replay buffer with {n} offline transitions.")
+
+    warmstart_replay_buffer(agent, env, replay_buffer, int(config.get("warmstart_steps", 0)))
 
     observation, _ = env.reset()
 
@@ -336,6 +418,33 @@ def setup_arguments(args=None):
     )
     
 
+    # Online-phase alpha override
+    parser.add_argument(
+        "--online_alpha", type=float, default=None,
+        help="Override alpha for the online phase. Lower = less BC anchoring, more Q-maximization. "
+             "Recommended: set lower than the offline alpha (e.g. offline=300 -> online=10).",
+    )
+
+    # Online-phase world model threshold overrides
+    parser.add_argument(
+        "--online_uncertainty_threshold", type=float, default=None,
+        help="Override per-transition uncertainty_threshold for the online phase. "
+             "Raise this online to accept more synthetic data as the world model improves.",
+    )
+    parser.add_argument(
+        "--online_synthetic_start_uncertainty_threshold", type=float, default=None,
+        help="Override synthetic_start_uncertainty_threshold for the online phase. "
+             "Lower this online to begin using synthetic data sooner.",
+    )
+
+    # Replay buffer warm-start (runs BEFORE the online budget starts)
+    parser.add_argument(
+        "--warmstart_steps", type=int, default=0,
+        help="Pre-fill the replay buffer with this many offline-policy rollouts before "
+             "online training begins. Does NOT count toward --online_training_steps. "
+             "Useful for FQL to avoid distribution collapse when alpha is reduced online.",
+    )
+
     # IFQL
     parser.add_argument("--expectile", type=float, default=None)
 
@@ -407,6 +516,10 @@ def main(args):
     config["offline_data"] = args.offline_data #4.1 offline data
     config["wsrl_steps"] = args.wsrl_steps #4.2 WSRL
     config["update_to_data_ratio"] = args.update_to_data_ratio or config.get("update_to_data_ratio", 1)
+    config["online_alpha"] = args.online_alpha
+    config["online_uncertainty_threshold"] = args.online_uncertainty_threshold
+    config["online_synthetic_start_uncertainty_threshold"] = args.online_synthetic_start_uncertainty_threshold
+    config["warmstart_steps"] = args.warmstart_steps
 
     exp_name = f"sd{args.seed}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{config['log_name']}"
     if args.lower_agent is not None:
@@ -430,6 +543,14 @@ def main(args):
         exp_name = f"{exp_name}_od{args.offline_data}"
     if args.wsrl_steps > 0:
         exp_name = f"{exp_name}_w{args.wsrl_steps}"
+    if args.online_alpha is not None:
+        exp_name = f"{exp_name}_oa{args.online_alpha}"
+    if args.online_uncertainty_threshold is not None:
+        exp_name = f"{exp_name}_out{args.online_uncertainty_threshold}"
+    if args.online_synthetic_start_uncertainty_threshold is not None:
+        exp_name = f"{exp_name}_osuth{args.online_synthetic_start_uncertainty_threshold}"
+    if args.warmstart_steps > 0:
+        exp_name = f"{exp_name}_ws{args.warmstart_steps}"
 
     # Override agent hyperparameters if specified
     if args.expectile is not None:
