@@ -131,6 +131,9 @@ class WorldModelAgent(nn.Module):
         if hasattr(self.lower_agent, "set_alpha"):
             self.lower_agent.set_alpha(alpha)
 
+    def set_synthetic_threshold(self, threshold: float) -> None:
+        self.synthetic_start_uncertainty_threshold = threshold
+
     def get_action(self, observation: np.ndarray):
         return self.lower_agent.get_action(observation)
 

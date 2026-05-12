@@ -39,6 +39,8 @@ def run_offline_training_loop(config: dict, train_logger, eval_logger, args: arg
 
     if "alpha_offline" in config and hasattr(agent, "set_alpha"):
         agent.set_alpha(config["alpha_offline"])
+    if "synthetic_threshold_offline" in config and hasattr(agent, "set_synthetic_threshold"):
+        agent.set_synthetic_threshold(config["synthetic_threshold_offline"])
 
     ep_len = env.spec.max_episode_steps or env.max_episode_steps
 
@@ -122,6 +124,8 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
         agent.load_state_dict(torch.load(agent_path))
     if "alpha_online" in config and hasattr(agent, "set_alpha"):
         agent.set_alpha(config["alpha_online"])
+    if "synthetic_threshold_online" in config and hasattr(agent, "set_synthetic_threshold"):
+        agent.set_synthetic_threshold(config["synthetic_threshold_online"])
     # load agent (end)
 
 
@@ -387,6 +391,10 @@ def setup_arguments(args=None):
     parser.add_argument("--update_to_data_ratio", type=int, default=None)
     parser.add_argument("--world_model_warmup_steps", type=int, default=None)
     parser.add_argument("--synthetic_start_uncertainty_threshold", type=float, default=None)
+    parser.add_argument("--synthetic_threshold_offline", type=float, default=None,
+                        help="Uncertainty threshold for world model synthetic data during offline training.")
+    parser.add_argument("--synthetic_threshold_online", type=float, default=None,
+                        help="Uncertainty threshold for world model synthetic data during online training.")
     parser.add_argument("--initial_synthetic_ratio", type=float, default=None)
     parser.add_argument("--synthetic_ratio", type=float, default=None)
     parser.add_argument("--synthetic_ratio_ramp_rate", type=float, default=None)
@@ -491,6 +499,12 @@ def main(args):
     if args.alpha_online is not None:
         config["alpha_online"] = args.alpha_online
         exp_name = f"{exp_name}_aon{args.alpha_online}"
+    if args.synthetic_threshold_offline is not None:
+        config["synthetic_threshold_offline"] = args.synthetic_threshold_offline
+        exp_name = f"{exp_name}_stoff{args.synthetic_threshold_offline}"
+    if args.synthetic_threshold_online is not None:
+        config["synthetic_threshold_online"] = args.synthetic_threshold_online
+        exp_name = f"{exp_name}_ston{args.synthetic_threshold_online}"
     if args.world_model_warmup_steps is not None and "world_model_warmup_steps" in config["agent_kwargs"]:
         config["agent_kwargs"]["world_model_warmup_steps"] = args.world_model_warmup_steps
         config["world_model_warmup_steps"] = args.world_model_warmup_steps
