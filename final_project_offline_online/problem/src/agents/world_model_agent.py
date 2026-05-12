@@ -281,18 +281,22 @@ class WorldModelAgent(nn.Module):
         step: int,
     ):
         model_metrics = self.update_world_model(observations, actions, rewards, next_observations)
-        synthetic_candidate = self.generate_synthetic_batch(observations)
+
         warmup_gate_open = step >= self.world_model_warmup_steps
-        uncertainty_gate_open = (
-            bool(synthetic_candidate)
-            and synthetic_candidate["candidate_mean_uncertainty"].item()
-            <= self.synthetic_start_uncertainty_threshold
-        )
-        synthetic = (
-            synthetic_candidate
-            if warmup_gate_open and uncertainty_gate_open and "observations" in synthetic_candidate
-            else {}
-        )
+
+        if warmup_gate_open:
+            synthetic_candidate = self.generate_synthetic_batch(observations)
+            uncertainty_gate_open = (
+                bool(synthetic_candidate)
+                and synthetic_candidate["candidate_mean_uncertainty"].item()
+                <= self.synthetic_start_uncertainty_threshold
+            )
+            synthetic = synthetic_candidate if uncertainty_gate_open and "observations" in synthetic_candidate else {}
+        else:
+            synthetic_candidate = {}
+            uncertainty_gate_open = False
+            synthetic = {}
+
         synthetic_ratio_used = self.current_synthetic_ratio
 
         (
