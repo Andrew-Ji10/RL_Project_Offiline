@@ -186,7 +186,7 @@ class IFQLAgent(nn.Module):
         # TODO(student): Update Q-function
         with torch.no_grad():
             v_next = self.value(next_observations)
-            target_q = rewards + self.discount * (1.0 - dones) * v_next
+            target_q = rewards + self.discount * (1.0 - dones.float()) * v_next
 
         actions_clamped = torch.clamp(actions, -1, 1)
         q_pred = self.critic(observations, actions_clamped)
