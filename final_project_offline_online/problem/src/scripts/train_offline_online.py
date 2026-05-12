@@ -37,6 +37,9 @@ def run_offline_training_loop(config: dict, train_logger, eval_logger, args: arg
         **config["agent_kwargs"],
     )
 
+    if "alpha_offline" in config and hasattr(agent, "set_alpha"):
+        agent.set_alpha(config["alpha_offline"])
+
     ep_len = env.spec.max_episode_steps or env.max_episode_steps
 
     best_eval_success = -float("inf")
@@ -117,6 +120,8 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
 
     if agent_path is not None:
         agent.load_state_dict(torch.load(agent_path))
+    if "alpha_online" in config and hasattr(agent, "set_alpha"):
+        agent.set_alpha(config["alpha_online"])
     # load agent (end)
 
 
@@ -370,6 +375,10 @@ def setup_arguments(args=None):
 
     # FQL / QSM
     parser.add_argument("--alpha", type=float, default=None)
+    parser.add_argument("--alpha_offline", type=float, default=None,
+                        help="Alpha for offline phase only. Overrides --alpha for offline.")
+    parser.add_argument("--alpha_online", type=float, default=None,
+                        help="Alpha for online phase only. Overrides --alpha for online.")
     parser.add_argument("--lower_agent", type=str, default=None, choices=["fql", "ifql", "sacbc"])
     parser.add_argument("--n_critics", type=int, default=None)
     parser.add_argument("--q_pessimism_rho", type=float, default=None)
@@ -476,6 +485,12 @@ def main(args):
         elif "alpha" in config["agent_kwargs"].get("lower_agent_kwargs", {}):
             config["agent_kwargs"]["lower_agent_kwargs"]["alpha"] = args.alpha
         exp_name = f"{exp_name}_a{args.alpha}"
+    if args.alpha_offline is not None:
+        config["alpha_offline"] = args.alpha_offline
+        exp_name = f"{exp_name}_aoff{args.alpha_offline}"
+    if args.alpha_online is not None:
+        config["alpha_online"] = args.alpha_online
+        exp_name = f"{exp_name}_aon{args.alpha_online}"
     if args.world_model_warmup_steps is not None and "world_model_warmup_steps" in config["agent_kwargs"]:
         config["agent_kwargs"]["world_model_warmup_steps"] = args.world_model_warmup_steps
         config["world_model_warmup_steps"] = args.world_model_warmup_steps

@@ -290,6 +290,9 @@ class FQLAgent(nn.Module):
 
         return metrics
 
+    def set_alpha(self, alpha: float) -> None:
+        self.alpha = alpha
+
     def update_target_critic(self) -> None:
         # TODO(student): Update target_critic using Polyak averaging with self.target_update_rate
         with torch.no_grad():

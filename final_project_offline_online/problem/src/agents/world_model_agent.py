@@ -127,6 +127,10 @@ class WorldModelAgent(nn.Module):
         self.td_error_ema_decay = td_error_ema_decay
         self.td_error_ema = None
 
+    def set_alpha(self, alpha: float) -> None:
+        if hasattr(self.lower_agent, "set_alpha"):
+            self.lower_agent.set_alpha(alpha)
+
     def get_action(self, observation: np.ndarray):
         return self.lower_agent.get_action(observation)
 
