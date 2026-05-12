@@ -77,6 +77,9 @@ class WorldModelAgent(nn.Module):
         uncertainty_threshold: float = 1.0,
         return_threshold: float = -float("inf"),
         synthetic_discount: float = 0.99,
+        utd_ratio: int = 1,
+        td_error_threshold: float = 1.0,
+        td_error_ema_decay: float = 0.99,
     ):
         super().__init__()
 
@@ -119,6 +122,10 @@ class WorldModelAgent(nn.Module):
         self.uncertainty_threshold = uncertainty_threshold
         self.return_threshold = return_threshold
         self.synthetic_discount = synthetic_discount
+        self.utd_ratio = utd_ratio
+        self.td_error_threshold = td_error_threshold
+        self.td_error_ema_decay = td_error_ema_decay
+        self.td_error_ema = None
 
     def get_action(self, observation: np.ndarray):
         return self.lower_agent.get_action(observation)
@@ -262,14 +269,31 @@ class WorldModelAgent(nn.Module):
             synthetic_weights.mean().item(),
         )
 
-    def _update_synthetic_ratio(self, uncertainty_gate_open: bool) -> None:
-        if uncertainty_gate_open:
+    def _update_synthetic_ratio(self, uncertainty_gate_open: bool, td_error: float = None) -> None:
+        if not uncertainty_gate_open:
+            self.current_synthetic_ratio = self.initial_synthetic_ratio
+            return
+
+        if td_error is not None:
+            if self.td_error_ema is None:
+                self.td_error_ema = td_error
+            else:
+                self.td_error_ema = (
+                    self.td_error_ema_decay * self.td_error_ema
+                    + (1.0 - self.td_error_ema_decay) * td_error
+                )
+
+        # High TD error means critic is destabilized — pull back toward real data
+        if self.td_error_ema is not None and self.td_error_ema > self.td_error_threshold:
+            self.current_synthetic_ratio = max(
+                self.current_synthetic_ratio - self.synthetic_ratio_ramp_rate,
+                self.initial_synthetic_ratio,
+            )
+        else:
             self.current_synthetic_ratio = min(
                 self.current_synthetic_ratio + self.synthetic_ratio_ramp_rate,
                 self.max_synthetic_ratio,
             )
-        else:
-            self.current_synthetic_ratio = self.initial_synthetic_ratio
 
     def update(
         self,
@@ -299,34 +323,46 @@ class WorldModelAgent(nn.Module):
 
         synthetic_ratio_used = self.current_synthetic_ratio
 
-        (
-            mixed_observations,
-            mixed_actions,
-            mixed_rewards,
-            mixed_next_observations,
-            mixed_dones,
-            sample_weights,
-            num_synthetic,
-            mean_synthetic_weight,
-        ) = self._mix_real_and_synthetic(
-            observations,
-            actions,
-            rewards,
-            next_observations,
-            dones,
-            synthetic,
-        )
-        self._update_synthetic_ratio(uncertainty_gate_open)
+        # UTD loop: mix once per iteration (randperm gives different synthetic subsets),
+        # update lower agent utd_ratio times, average the metrics.
+        all_lower_metrics = []
+        num_synthetic = 0
+        mean_synthetic_weight = 0.0
+        for _ in range(self.utd_ratio):
+            (
+                mixed_observations,
+                mixed_actions,
+                mixed_rewards,
+                mixed_next_observations,
+                mixed_dones,
+                sample_weights,
+                num_synthetic,
+                mean_synthetic_weight,
+            ) = self._mix_real_and_synthetic(
+                observations,
+                actions,
+                rewards,
+                next_observations,
+                dones,
+                synthetic,
+            )
+            all_lower_metrics.append(self.lower_agent.update(
+                mixed_observations,
+                mixed_actions,
+                mixed_rewards,
+                mixed_next_observations,
+                mixed_dones,
+                step,
+                sample_weights,
+            ))
 
-        lower_metrics = self.lower_agent.update(
-            mixed_observations,
-            mixed_actions,
-            mixed_rewards,
-            mixed_next_observations,
-            mixed_dones,
-            step,
-            sample_weights,
-        )
+        lower_metrics = {
+            k: sum(m[k] for m in all_lower_metrics) / len(all_lower_metrics)
+            for k in all_lower_metrics[-1]
+        }
+
+        td_error = lower_metrics.get("critic/q_loss", None)
+        self._update_synthetic_ratio(uncertainty_gate_open, td_error)
 
         metrics = {
             **{f"lower/{k}": v for k, v in lower_metrics.items()},
@@ -342,6 +378,7 @@ class WorldModelAgent(nn.Module):
             "world_model/uncertainty_gate_open": float(uncertainty_gate_open),
             "world_model/warmup_steps_remaining": max(self.world_model_warmup_steps - step, 0),
             "world_model/synthetic_start_uncertainty_threshold": self.synthetic_start_uncertainty_threshold,
+            "world_model/td_error_ema": self.td_error_ema if self.td_error_ema is not None else 0.0,
             "world_model/acceptance_rate": (
                 synthetic_candidate["acceptance_rate"].item() if synthetic_candidate else 0.0
             ),

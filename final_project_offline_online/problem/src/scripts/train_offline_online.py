@@ -355,6 +355,8 @@ def setup_arguments(args=None):
     parser.add_argument("--synthetic_uncertainty_weight_coef", type=float, default=None)
     parser.add_argument("--uncertainty_penalty", type=float, default=None)
     parser.add_argument("--uncertainty_threshold", type=float, default=None)
+    parser.add_argument("--utd_ratio", type=int, default=None)
+    parser.add_argument("--td_error_threshold", type=float, default=None)
 
     # QSM
     parser.add_argument("--inv_temp", type=float, default=None)
@@ -482,6 +484,14 @@ def main(args):
         config["agent_kwargs"]["uncertainty_threshold"] = args.uncertainty_threshold
         config["uncertainty_threshold"] = args.uncertainty_threshold
         exp_name = f"{exp_name}_uth{args.uncertainty_threshold}"
+    if args.utd_ratio is not None and "utd_ratio" in config["agent_kwargs"]:
+        config["agent_kwargs"]["utd_ratio"] = args.utd_ratio
+        config["utd_ratio"] = args.utd_ratio
+        exp_name = f"{exp_name}_utd{args.utd_ratio}"
+    if args.td_error_threshold is not None and "td_error_threshold" in config["agent_kwargs"]:
+        config["agent_kwargs"]["td_error_threshold"] = args.td_error_threshold
+        config["td_error_threshold"] = args.td_error_threshold
+        exp_name = f"{exp_name}_tdet{args.td_error_threshold}"
     if args.inv_temp is not None:
         config['agent_kwargs']['inv_temp'] = args.inv_temp
         exp_name = f"{exp_name}_i{args.inv_temp}"
