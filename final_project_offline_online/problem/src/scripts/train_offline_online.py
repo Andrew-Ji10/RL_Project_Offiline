@@ -57,6 +57,12 @@ def run_offline_training_loop(config: dict, train_logger, eval_logger, args: arg
             k: ptu.from_numpy(v) if isinstance(v, np.ndarray) else v for k, v in batch.items()
         }
 
+        real_batch = None
+        if chunk_size > 1 and hasattr(agent, "update_world_model"):
+            wm_np = dataset.sample(config["batch_size"])
+            real_batch = {k: ptu.from_numpy(v) if isinstance(v, np.ndarray) else v for k, v in wm_np.items()}
+
+        update_kwargs = {"real_batch": real_batch} if real_batch is not None else {}
         metrics = agent.update(
             batch["observations"],
             batch["actions"],
@@ -64,6 +70,7 @@ def run_offline_training_loop(config: dict, train_logger, eval_logger, args: arg
             batch["next_observations"],
             batch["dones"],
             step,
+            **update_kwargs,
         )
 
         if step % args.log_interval == 0:
@@ -158,8 +165,14 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
     #done
 
     replay_buffer = ReplayBuffer(config["replay_buffer_capacity"])
+    _online_chunk_size = config.get("action_chunk_size", 1)
+    single_step_buffer = (
+        ReplayBuffer(config["replay_buffer_capacity"])
+        if _online_chunk_size > 1 and hasattr(agent, "update_world_model")
+        else None
+    )
 
-    #4.1- offline data pre-filling the replay buffer 
+    #4.1- offline data pre-filling the replay buffer
     n_offline = int(config.get("offline_data", 0))
     if n_offline > 0:
         _, offline_dataset = config["make_env_and_dataset"]()
@@ -201,11 +214,21 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
             done = False
             truncated = False
             final_obs = observation
+            current_obs = observation
             for k in range(chunk_size):
                 ac = action_chunk[k * ac_dim:(k + 1) * ac_dim]
                 next_observation, reward, terminated, truncated, info = env.step(ac)
                 done = terminated or truncated
                 cum_reward += (chunk_discount ** k) * reward
+                if single_step_buffer is not None:
+                    single_step_buffer.insert(
+                        observation=current_obs,
+                        action=ac,
+                        reward=reward,
+                        next_observation=next_observation,
+                        done=done and not truncated,
+                    )
+                current_obs = next_observation
                 final_obs = next_observation
                 if done:
                     break
@@ -262,13 +285,20 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
                     k: ptu.from_numpy(v) if isinstance(v, np.ndarray) else v for k, v in batch.items()
                 }
 
+                real_batch = None
+                if single_step_buffer is not None and single_step_buffer.size >= config['batch_size']:
+                    wm_np = single_step_buffer.sample(config['batch_size'])
+                    real_batch = {k: ptu.from_numpy(v) if isinstance(v, np.ndarray) else v for k, v in wm_np.items()}
+
+                online_update_kwargs = {"real_batch": real_batch} if real_batch is not None else {}
                 update_infos.append(agent.update(
                     observations = batch["observations"],
                     actions = batch["actions"],
                     rewards = batch['rewards'],
                     next_observations = batch['next_observations'],
                     dones = batch['dones'],
-                    step = step))
+                    step = step,
+                    **online_update_kwargs))
             update_info = {
                 k: float(np.mean([info[k] for info in update_infos]))
                 for k in update_infos[-1]

@@ -1,4 +1,4 @@
-from typing import Sequence
+from typing import Optional, Sequence
 
 import numpy as np
 import torch
@@ -312,10 +312,23 @@ class WorldModelAgent(nn.Module):
         next_observations: torch.Tensor,
         dones: torch.Tensor,
         step: int,
+        real_batch: Optional[dict] = None,
     ):
-        # World model is single-step; slice first action from chunk if chunking is active
-        single_actions = actions[:, :self.action_dim] if actions.shape[-1] > self.action_dim else actions
-        model_metrics = self.update_world_model(observations, single_actions, rewards, next_observations)
+        # When action chunking is active, the main batch contains K-step aggregated transitions
+        # (next_obs is K steps ahead, reward is cumulative). Use real_batch of true single-step
+        # transitions for world model training so the dynamics model sees consistent 1-step targets.
+        if real_batch is not None:
+            wm_obs = real_batch["observations"]
+            wm_actions = real_batch["actions"]
+            wm_rewards = real_batch["rewards"]
+            wm_next_obs = real_batch["next_observations"]
+        else:
+            single_actions = actions[:, :self.action_dim] if actions.shape[-1] > self.action_dim else actions
+            wm_obs = observations
+            wm_actions = single_actions
+            wm_rewards = rewards
+            wm_next_obs = next_observations
+        model_metrics = self.update_world_model(wm_obs, wm_actions, wm_rewards, wm_next_obs)
 
         warmup_gate_open = step >= self.world_model_warmup_steps
 
