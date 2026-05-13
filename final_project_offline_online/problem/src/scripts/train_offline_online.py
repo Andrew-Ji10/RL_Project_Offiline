@@ -45,7 +45,7 @@ def run_offline_training_loop(config: dict, train_logger, eval_logger, args: arg
     ep_len = env.spec.max_episode_steps or env.max_episode_steps
 
     best_eval_success = -float("inf")
-    best_agent_path = os.path.join(args.save_dir, "agent_best.pt")
+    best_agent_path = os.path.join(args.save_dir, "agent_offline_best.pt")
 
     for step in tqdm.trange(config["offline_training_steps"] + 1, dynamic_ncols=True):
         # Train with offline RL
@@ -99,7 +99,9 @@ def run_offline_training_loop(config: dict, train_logger, eval_logger, args: arg
                 torch.save(agent.state_dict(), best_agent_path)
 
     
-    return dump_log(agent, train_logger, eval_logger, config, args.save_dir)
+    agent_pt_path = dump_log(agent, train_logger, eval_logger, config, args.save_dir)
+    torch.save(agent.state_dict(), os.path.join(args.save_dir, "agent_offline.pt"))
+    return agent_pt_path
 
 def run_online_training_loop(config: dict, train_logger, eval_logger, args: argparse.Namespace, agent_path: str, start_step: int = 0):
     """
@@ -366,7 +368,9 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
 
 
 
-    return dump_log(agent, train_logger, eval_logger, config, args.save_dir)
+    agent_pt_path = dump_log(agent, train_logger, eval_logger, config, args.save_dir)
+    torch.save(agent.state_dict(), os.path.join(args.save_dir, "agent_online.pt"))
+    return agent_pt_path
 
 
 
