@@ -127,6 +127,7 @@ class WorldModelAgent(nn.Module):
         self.td_error_threshold = td_error_threshold
         self.td_error_ema_decay = td_error_ema_decay
         self.td_error_ema = None
+        self.world_model_enabled = True
 
     def set_alpha(self, alpha: float) -> None:
         if hasattr(self.lower_agent, "set_alpha"):
@@ -134,6 +135,9 @@ class WorldModelAgent(nn.Module):
 
     def set_synthetic_threshold(self, threshold: float) -> None:
         self.synthetic_start_uncertainty_threshold = threshold
+
+    def set_world_model_enabled(self, enabled: bool) -> None:
+        self.world_model_enabled = enabled
 
     def get_action(self, observation: np.ndarray):
         return self.lower_agent.get_action(observation)
@@ -408,6 +412,28 @@ class WorldModelAgent(nn.Module):
         step: int,
         real_batch: Optional[dict] = None,
     ):
+        if not self.world_model_enabled:
+            sample_weights = torch.ones_like(rewards)
+            all_lower_metrics = []
+            for _ in range(self.utd_ratio):
+                all_lower_metrics.append(self.lower_agent.update(
+                    observations,
+                    actions,
+                    rewards,
+                    next_observations,
+                    dones,
+                    step,
+                    sample_weights,
+                ))
+            lower_metrics = {
+                k: sum(m[k] for m in all_lower_metrics) / len(all_lower_metrics)
+                for k in all_lower_metrics[-1]
+            }
+            return {
+                **{f"lower/{k}": v for k, v in lower_metrics.items()},
+                "world_model/enabled": 0.0,
+            }
+
         # When action chunking is active, the main batch contains K-step aggregated transitions
         # (next_obs is K steps ahead, reward is cumulative). Use real_batch of true single-step
         # transitions for world model training so the dynamics model sees consistent 1-step targets.

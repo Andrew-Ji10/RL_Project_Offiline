@@ -135,6 +135,9 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
         agent.set_alpha(config["alpha_online"])
     if "synthetic_threshold_online" in config and hasattr(agent, "set_synthetic_threshold"):
         agent.set_synthetic_threshold(config["synthetic_threshold_online"])
+    if config.get("disable_world_model_online", False) and hasattr(agent, "set_world_model_enabled"):
+        agent.set_world_model_enabled(False)
+        print("[online] World model disabled: skipping WM updates and synthetic data online.")
     # load agent (end)
 
 
@@ -168,9 +171,13 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
 
     replay_buffer = ReplayBuffer(config["replay_buffer_capacity"])
     _online_chunk_size = config.get("action_chunk_size", 1)
+    _wm_online_active = (
+        hasattr(agent, "update_world_model")
+        and not config.get("disable_world_model_online", False)
+    )
     single_step_buffer = (
         ReplayBuffer(config["replay_buffer_capacity"])
-        if _online_chunk_size > 1 and hasattr(agent, "update_world_model")
+        if _online_chunk_size > 1 and _wm_online_active
         else None
     )
 
@@ -452,6 +459,12 @@ def setup_arguments(args=None):
              "When set, offline training is skipped and this checkpoint is loaded for online training. "
              "Use with --offline_training_steps=0 so logs start at step 0 (splice_online.py will shift them).",
     )
+    parser.add_argument(
+        "--disable_world_model_online", action="store_true",
+        help="If set, skip world model training and synthetic data generation during online "
+             "training. Only the lower agent is updated on real replay data. Faster online step "
+             "time when you don't intend to use the world model online.",
+    )
 
     # For njobs mode (optional)
     parser.add_argument("--njobs", type=int, default=None)
@@ -498,6 +511,7 @@ def main(args):
     config["offline_data"] = args.offline_data #4.1 offline data
     config["wsrl_steps"] = args.wsrl_steps #4.2 WSRL
     config["update_to_data_ratio"] = args.update_to_data_ratio or config.get("update_to_data_ratio", 1)
+    config["disable_world_model_online"] = args.disable_world_model_online
 
     exp_name = f"sd{args.seed}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{config['log_name']}"
     if args.lower_agent is not None:
@@ -607,6 +621,8 @@ def main(args):
     if args.noise_scale is not None:
         config['agent_kwargs']['noise_scale'] = args.noise_scale
         exp_name = f"{exp_name}_n{args.noise_scale}"
+    if args.disable_world_model_online:
+        exp_name = f"{exp_name}_nowmon"
     if args.online_training_steps > 0:
         exp_name = f"{exp_name}_online"
     if args.offline_training_steps > 0:
