@@ -445,6 +445,14 @@ def setup_arguments(args=None):
     # DSRL
     parser.add_argument("--noise_scale", type=float, default=None)
 
+    # Pretrained checkpoint: skip offline training and load this agent for online
+    parser.add_argument(
+        "--pretrained_agent_path", type=str, default=None,
+        help="Path to a saved agent checkpoint (e.g. agent_offline.pt). "
+             "When set, offline training is skipped and this checkpoint is loaded for online training. "
+             "Use with --offline_training_steps=0 so logs start at step 0 (splice_online.py will shift them).",
+    )
+
     # For njobs mode (optional)
     parser.add_argument("--njobs", type=int, default=None)
     parser.add_argument("job_specs", nargs="*")
@@ -612,17 +620,20 @@ def main(args):
 
     start_step = 0
     agent_path_offline = None
-    if args.offline_training_steps > 0:
+    if args.pretrained_agent_path is not None:
+        # Skip offline training entirely; use the provided checkpoint for online training.
+        # Set start_step=0 so logs are relative to online phase start (use splice_online.py
+        # to prepend the offline portion from the original full run).
+        print(f"[pretrained] Skipping offline training. Loading checkpoint: {args.pretrained_agent_path}")
+        agent_path_offline = args.pretrained_agent_path
+        start_step = 0
+    elif args.offline_training_steps > 0:
         print(f"Running offline training loop with {args.offline_training_steps} steps")
-        # TODO(student): Implement offline training loop
-        # Hint: You might consider passing the agent's path to the online training loop
         agent_path_offline = run_offline_training_loop(config, train_logger, eval_logger, args, start_step=0)
         start_step = args.offline_training_steps
-        
-    
+
     if args.online_training_steps > 0:
         print(f"Running online training loop with {args.online_training_steps} steps")
-        # TODO(student): Implement online training loop
         agent_path_online = run_online_training_loop(config, train_logger, eval_logger, args, agent_path_offline, start_step=start_step)
         
     wandb.finish()
