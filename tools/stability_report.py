@@ -20,9 +20,9 @@ that share (algo, env, alpha, inv_temp, expectile, od, w) but differ only in
 the seed prefix `sdN_`.
 
 Usage (from repo root):
-    python tools\stability_report.py
-    python tools\stability_report.py --root Download --last_k 3
-    python tools\stability_report.py --csv stability.csv
+    python tools/stability_report.py --full_run_dir <dir> --online_dir <dir>
+    python tools/stability_report.py --full_run_dir <dir> --online_dir <dir> --last_k 5
+    python tools/stability_report.py --full_run_dir <dir> --online_dir <dir> --csv out.csv
 """
 
 import argparse
@@ -121,26 +121,36 @@ def family_key(folder_name: str, flags: dict) -> str:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", default="Download")
+    ap.add_argument("--full_run_dir", required=True,
+                    help="Directory for the full offline+online run.")
+    ap.add_argument("--online_dir", required=True,
+                    help="Directory for the online-only run.")
     ap.add_argument("--last_k", type=int, default=3)
     ap.add_argument("--csv", default=None,
                     help="Optional path to write the per-run table as CSV.")
     args = ap.parse_args()
 
-    root = Path(args.root)
-    if not root.exists():
-        raise SystemExit(f"Root {root} does not exist.")
+    dirs = [
+        ("full_run", Path(args.full_run_dir)),
+        ("online_only", Path(args.online_dir)),
+    ]
+    for label, d in dirs:
+        if not d.exists():
+            raise SystemExit(f"{label} directory {d} does not exist.")
 
     rows = []
-    for eval_csv in sorted(root.rglob("eval.csv")):
+    for label, d in dirs:
+        eval_csv = d / "eval.csv"
+        if not eval_csv.exists():
+            raise SystemExit(f"No eval.csv found in {d}.")
         flags = load_flags(eval_csv)
         rec = parse_eval_csv(eval_csv)
         m = stab_metrics(rec, args.last_k, flags)
         if m is None:
             continue
         rows.append({
-            "group":   eval_csv.parent.parent.name,
-            "run":     eval_csv.parent.name,
+            "group":   label,
+            "run":     d.name,
             "agent":   flags.get("agent", "?"),
             "env":     flags.get("env_name", "?"),
             "alpha":   flags.get("agent_kwargs", {}).get("alpha"),
@@ -152,7 +162,7 @@ def main():
         })
 
     if not rows:
-        raise SystemExit(f"No eval.csv files found under {root}.")
+        raise SystemExit("No valid eval.csv files found.")
 
     # --- per-run table sorted by late_min (autograder predictor) ---
     rows.sort(key=lambda r: (-(r["late_min"] or 0), -(r["late_mean"] or 0)))

@@ -109,6 +109,7 @@ class WorldModelAgent(nn.Module):
         self.world_model_optimizer = make_world_model_optimizer(self.world_model.parameters())
         self.model_loss_fn = nn.MSELoss()
 
+        self.chunk_size = getattr(self.lower_agent, 'chunk_size', 1)
         self.model_updates_per_step = model_updates_per_step
         self.world_model_warmup_steps = world_model_warmup_steps
         self.synthetic_start_uncertainty_threshold = synthetic_start_uncertainty_threshold
@@ -178,6 +179,15 @@ class WorldModelAgent(nn.Module):
         self,
         observations: torch.Tensor,
     ) -> dict:
+        if self.chunk_size > 1:
+            return self._generate_synthetic_batch_chunked(observations)
+        return self._generate_synthetic_batch_single(observations)
+
+    @torch.no_grad()
+    def _generate_synthetic_batch_single(
+        self,
+        observations: torch.Tensor,
+    ) -> dict:
         obs = observations
         rollout_observations = []
         rollout_actions = []
@@ -226,6 +236,90 @@ class WorldModelAgent(nn.Module):
             "dones": torch.zeros(
                 int(accepted.sum().item()) * self.synthetic_rollout_horizon,
                 device=observations.device,
+                dtype=observations.dtype,
+            ),
+            "candidate_mean_uncertainty": candidate_mean_uncertainty,
+            "accepted_mean_uncertainty": uncertainties[:, accepted].mean(),
+            "acceptance_rate": accepted.float().mean(),
+        }
+        return synthetic
+
+    @torch.no_grad()
+    def _generate_synthetic_batch_chunked(
+        self,
+        observations: torch.Tensor,
+    ) -> dict:
+        """Produce K-step chunk transitions so actions match the chunked real batch format."""
+        B = observations.shape[0]
+        chunk_action_dim = self.action_dim * self.chunk_size
+        device = observations.device
+
+        # Each outer horizon step is one full K-step chunk transition
+        rollout_observations = []
+        rollout_chunk_actions = []
+        rollout_rewards = []
+        rollout_next_observations = []
+        rollout_uncertainties = []
+        cumulative_returns = torch.zeros(B, device=device)
+
+        obs = observations
+        for horizon_idx in range(self.synthetic_rollout_horizon):
+            # Roll out chunk_size 1-step predictions, accumulate
+            chunk_start_obs = obs
+            chunk_actions = []
+            chunk_reward = torch.zeros(B, device=device)
+            chunk_uncertainty = torch.zeros(B, device=device)
+            alive = torch.ones(B, device=device)
+
+            for k in range(self.chunk_size):
+                action = self._sample_lower_actions(obs)
+                predictions = self.world_model(obs, action)
+                mean_prediction = predictions.mean(dim=0)
+
+                uncertainty = predictions.var(dim=0, unbiased=False).sum(dim=-1).sqrt()
+                delta = mean_prediction[:, : self.observation_dim]
+                step_reward = mean_prediction[:, self.observation_dim] - self.uncertainty_penalty * uncertainty
+                next_obs = obs + delta
+
+                chunk_actions.append(action)
+                chunk_reward = chunk_reward + alive * (self.synthetic_discount ** k) * step_reward
+                chunk_uncertainty = chunk_uncertainty + uncertainty
+                obs = next_obs
+
+            chunk_uncertainty = chunk_uncertainty / self.chunk_size
+            # actions: (B, chunk_size * action_dim)
+            chunk_action_tensor = torch.cat(chunk_actions, dim=-1)
+
+            rollout_observations.append(chunk_start_obs)
+            rollout_chunk_actions.append(chunk_action_tensor)
+            rollout_rewards.append(chunk_reward)
+            rollout_next_observations.append(obs)
+            rollout_uncertainties.append(chunk_uncertainty)
+            cumulative_returns = cumulative_returns + (self.synthetic_discount ** (horizon_idx * self.chunk_size)) * chunk_reward
+
+        uncertainties = torch.stack(rollout_uncertainties, dim=0)  # (H, B)
+        candidate_mean_uncertainty = uncertainties.mean()
+        accepted = (
+            (uncertainties.mean(dim=0) <= self.uncertainty_threshold)
+            & (cumulative_returns >= self.return_threshold)
+        )
+
+        if accepted.sum() == 0:
+            return {
+                "candidate_mean_uncertainty": candidate_mean_uncertainty,
+                "acceptance_rate": accepted.float().mean(),
+            }
+
+        n_accepted = int(accepted.sum().item())
+        synthetic = {
+            "observations": torch.stack(rollout_observations, dim=0)[:, accepted].reshape(-1, self.observation_dim),
+            "actions": torch.stack(rollout_chunk_actions, dim=0)[:, accepted].reshape(-1, chunk_action_dim),
+            "rewards": torch.stack(rollout_rewards, dim=0)[:, accepted].reshape(-1),
+            "next_observations": torch.stack(rollout_next_observations, dim=0)[:, accepted].reshape(-1, self.observation_dim),
+            "uncertainties": uncertainties[:, accepted].reshape(-1),
+            "dones": torch.zeros(
+                n_accepted * self.synthetic_rollout_horizon,
+                device=device,
                 dtype=observations.dtype,
             ),
             "candidate_mean_uncertainty": candidate_mean_uncertainty,
@@ -332,7 +426,12 @@ class WorldModelAgent(nn.Module):
 
         warmup_gate_open = step >= self.world_model_warmup_steps
 
-        if warmup_gate_open:
+        can_use_synthetic = (
+            warmup_gate_open
+            and self.synthetic_start_uncertainty_threshold > 0
+            and self.current_synthetic_ratio > 0
+        )
+        if can_use_synthetic:
             synthetic_candidate = self.generate_synthetic_batch(observations)
             uncertainty_gate_open = (
                 bool(synthetic_candidate)
