@@ -1,5 +1,6 @@
 import argparse
 import os
+from pathlib import Path
 from datetime import datetime
 
 import numpy as np
@@ -13,6 +14,24 @@ from infrastructure import utils
 from infrastructure import pytorch_util as ptu
 from infrastructure.log_utils import setup_wandb, Logger, dump_log
 from infrastructure.replay_buffer import ReplayBuffer
+
+
+def load_warm_start_agent(agent: torch.nn.Module, agent_path: str) -> None:
+    checkpoint = torch.load(agent_path, map_location=ptu.device)
+    if hasattr(agent, "lower_agent") and not any(k.startswith("lower_agent.") for k in checkpoint):
+        agent.lower_agent.load_state_dict(checkpoint)
+        print(f"Loaded warm-start checkpoint into lower_agent from {agent_path}")
+    elif not hasattr(agent, "lower_agent") and any(k.startswith("lower_agent.") for k in checkpoint):
+        lower_checkpoint = {
+            k.removeprefix("lower_agent."): v
+            for k, v in checkpoint.items()
+            if k.startswith("lower_agent.")
+        }
+        agent.load_state_dict(lower_checkpoint)
+        print(f"Loaded lower_agent warm-start checkpoint from {agent_path}")
+    else:
+        agent.load_state_dict(checkpoint)
+        print(f"Loaded warm-start checkpoint from {agent_path}")
 
 
 def run_offline_training_loop(config: dict, train_logger, eval_logger, args: argparse.Namespace, start_step: int = 0):
@@ -46,6 +65,7 @@ def run_offline_training_loop(config: dict, train_logger, eval_logger, args: arg
 
     best_eval_success = -float("inf")
     best_agent_path = os.path.join(args.save_dir, "agent_best.pt")
+    offline_final_path = os.path.join(args.save_dir, "agent_offline_final.pt")
 
     for step in tqdm.trange(config["offline_training_steps"] + 1, dynamic_ncols=True):
         # Train with offline RL
@@ -91,8 +111,9 @@ def run_offline_training_loop(config: dict, train_logger, eval_logger, args: arg
             if eval_success >= best_eval_success:
                 torch.save(agent.state_dict(), best_agent_path)
 
-    
-    return dump_log(agent, train_logger, eval_logger, config, args.save_dir)
+    torch.save(agent.state_dict(), offline_final_path)
+    dump_log(agent, train_logger, eval_logger, config, args.save_dir)
+    return offline_final_path
 
 def run_online_training_loop(config: dict, train_logger, eval_logger, args: argparse.Namespace, agent_path: str, start_step: int = 0):
     """
@@ -104,6 +125,7 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
     #inspired by HW 3
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
+    ptu.init_gpu(use_gpu=not args.no_gpu, gpu_id=args.which_gpu)
 
     # make the gym environment
     env, _ = config["make_env_and_dataset"]()
@@ -121,7 +143,7 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
     )
 
     if agent_path is not None:
-        agent.load_state_dict(torch.load(agent_path))
+        load_warm_start_agent(agent, agent_path)
     if "alpha_online" in config and hasattr(agent, "set_alpha"):
         agent.set_alpha(config["alpha_online"])
     if "synthetic_threshold_online" in config and hasattr(agent, "set_synthetic_threshold"):
@@ -336,13 +358,22 @@ def run_online_training_loop(config: dict, train_logger, eval_logger, args: argp
 
 
 
-    return dump_log(agent, train_logger, eval_logger, config, args.save_dir)
+    online_final_path = os.path.join(args.save_dir, "agent_online_final.pt")
+    torch.save(agent.state_dict(), online_final_path)
+    dump_log(agent, train_logger, eval_logger, config, args.save_dir)
+    return online_final_path
 
 
 
 def setup_arguments(args=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--base_config", type=str, default='sacbc')
+    parser.add_argument(
+        "--online_base_config",
+        type=str,
+        default=None,
+        help="Optional config to use for online training. Example: offline world_model, online fql.",
+    )
     parser.add_argument("--env_name", type=str, default='cube-single-play-singletask-task1-v0')
     parser.add_argument("--exp_name", type=str, default=None)
     parser.add_argument("--seed", type=int, default=0)
@@ -351,6 +382,12 @@ def setup_arguments(args=None):
     parser.add_argument("--which_gpu", default=0)
     parser.add_argument("--offline_training_steps", type=int, default=500000)  # Should be 500k to pass the autograder
     parser.add_argument("--online_training_steps", type=int, default=100000)  # Should be 100k to pass the autograder
+    parser.add_argument(
+        "--load_agent_path",
+        type=str,
+        default=None,
+        help="Path to a saved agent.pt/agent_best.pt checkpoint to use as the online warm start.",
+    )
     parser.add_argument("--replay_buffer_capacity", type=int, default=1000000)
     parser.add_argument("--log_interval", type=int, default=5000)
     parser.add_argument("--eval_interval", type=int, default=5000)
@@ -440,24 +477,33 @@ def main(args):
     if args.target_update_rate is not None:
         config_kwargs["target_update_rate"] = args.target_update_rate
     config = configs.configs[args.base_config](args.env_name, **config_kwargs)
+    online_config = None
+    if args.online_base_config is not None:
+        online_config = configs.configs[args.online_base_config](args.env_name, **config_kwargs)
 
     # Set common config values from args for autograder
-    config['seed'] = args.seed
-    config['run_group'] = args.run_group
-    config['offline_training_steps'] = args.offline_training_steps
-    config['online_training_steps'] = args.online_training_steps
-    config['log_interval'] = args.log_interval
-    config['eval_interval'] = args.eval_interval
-    config['num_eval_trajectories'] = args.num_eval_trajectories
-    config['replay_buffer_capacity'] = args.replay_buffer_capacity
+    phase_configs = [config] + ([online_config] if online_config is not None else [])
+    for phase_config in phase_configs:
+        phase_config['seed'] = args.seed
+        phase_config['run_group'] = args.run_group
+        phase_config['offline_training_steps'] = args.offline_training_steps
+        phase_config['online_training_steps'] = args.online_training_steps
+        phase_config["load_agent_path"] = args.load_agent_path
+        phase_config['log_interval'] = args.log_interval
+        phase_config['eval_interval'] = args.eval_interval
+        phase_config['num_eval_trajectories'] = args.num_eval_trajectories
+        phase_config['replay_buffer_capacity'] = args.replay_buffer_capacity
     
     # TODO(student): If necessary, add additional config values
-    config["training_starts"] = 10000 # HW 3 sac_config.py
-    config["offline_data"] = args.offline_data #4.1 offline data
-    config["wsrl_steps"] = args.wsrl_steps #4.2 WSRL
-    config["update_to_data_ratio"] = args.update_to_data_ratio or config.get("update_to_data_ratio", 1)
+    for phase_config in phase_configs:
+        phase_config["training_starts"] = 10000 # HW 3 sac_config.py
+        phase_config["offline_data"] = args.offline_data #4.1 offline data
+        phase_config["wsrl_steps"] = args.wsrl_steps #4.2 WSRL
+        phase_config["update_to_data_ratio"] = args.update_to_data_ratio or phase_config.get("update_to_data_ratio", 1)
 
     exp_name = f"sd{args.seed}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{config['log_name']}"
+    if args.online_base_config is not None:
+        exp_name = f"{exp_name}_onlinebase{args.online_base_config}"
     if args.lower_agent is not None:
         exp_name = f"{exp_name}_lower{args.lower_agent}"
     if args.n_critics is not None:
@@ -479,31 +525,35 @@ def main(args):
         exp_name = f"{exp_name}_od{args.offline_data}"
     if args.wsrl_steps > 0:
         exp_name = f"{exp_name}_w{args.wsrl_steps}"
+    if args.load_agent_path is not None:
+        exp_name = f"{exp_name}_loaded"
 
     # Override agent hyperparameters if specified
     if args.expectile is not None:
-        if "expectile" in config["agent_kwargs"]:
-            config['agent_kwargs']['expectile'] = args.expectile
-        elif "expectile" in config["agent_kwargs"].get("lower_agent_kwargs", {}):
-            config["agent_kwargs"]["lower_agent_kwargs"]["expectile"] = args.expectile
+        for phase_config in phase_configs:
+            if "expectile" in phase_config["agent_kwargs"]:
+                phase_config['agent_kwargs']['expectile'] = args.expectile
+            elif "expectile" in phase_config["agent_kwargs"].get("lower_agent_kwargs", {}):
+                phase_config["agent_kwargs"]["lower_agent_kwargs"]["expectile"] = args.expectile
         exp_name = f"{exp_name}_e{args.expectile}"
     if args.alpha is not None:
-        if "alpha" in config["agent_kwargs"]:
-            config['agent_kwargs']['alpha'] = args.alpha
-        elif "alpha" in config["agent_kwargs"].get("lower_agent_kwargs", {}):
-            config["agent_kwargs"]["lower_agent_kwargs"]["alpha"] = args.alpha
+        for phase_config in phase_configs:
+            if "alpha" in phase_config["agent_kwargs"]:
+                phase_config['agent_kwargs']['alpha'] = args.alpha
+            elif "alpha" in phase_config["agent_kwargs"].get("lower_agent_kwargs", {}):
+                phase_config["agent_kwargs"]["lower_agent_kwargs"]["alpha"] = args.alpha
         exp_name = f"{exp_name}_a{args.alpha}"
     if args.alpha_offline is not None:
         config["alpha_offline"] = args.alpha_offline
         exp_name = f"{exp_name}_aoff{args.alpha_offline}"
     if args.alpha_online is not None:
-        config["alpha_online"] = args.alpha_online
+        (online_config or config)["alpha_online"] = args.alpha_online
         exp_name = f"{exp_name}_aon{args.alpha_online}"
     if args.synthetic_threshold_offline is not None:
         config["synthetic_threshold_offline"] = args.synthetic_threshold_offline
         exp_name = f"{exp_name}_stoff{args.synthetic_threshold_offline}"
     if args.synthetic_threshold_online is not None:
-        config["synthetic_threshold_online"] = args.synthetic_threshold_online
+        (online_config or config)["synthetic_threshold_online"] = args.synthetic_threshold_online
         exp_name = f"{exp_name}_ston{args.synthetic_threshold_online}"
     if args.world_model_warmup_steps is not None and "world_model_warmup_steps" in config["agent_kwargs"]:
         config["agent_kwargs"]["world_model_warmup_steps"] = args.world_model_warmup_steps
@@ -552,12 +602,14 @@ def main(args):
         config["td_error_threshold"] = args.td_error_threshold
         exp_name = f"{exp_name}_tdet{args.td_error_threshold}"
     if args.action_chunk_size is not None:
-        config["action_chunk_size"] = args.action_chunk_size
+        for phase_config in phase_configs:
+            phase_config["action_chunk_size"] = args.action_chunk_size
+            # push into agent_kwargs (direct FQL) or lower_agent_kwargs (world model+FQL)
+            if "action_chunk_size" in phase_config["agent_kwargs"]:
+                phase_config["agent_kwargs"]["action_chunk_size"] = args.action_chunk_size
+            elif "action_chunk_size" in phase_config["agent_kwargs"].get("lower_agent_kwargs", {}):
+                phase_config["agent_kwargs"]["lower_agent_kwargs"]["action_chunk_size"] = args.action_chunk_size
         # push into agent_kwargs (direct FQL) or lower_agent_kwargs (world model+FQL)
-        if "action_chunk_size" in config["agent_kwargs"]:
-            config["agent_kwargs"]["action_chunk_size"] = args.action_chunk_size
-        elif "action_chunk_size" in config["agent_kwargs"].get("lower_agent_kwargs", {}):
-            config["agent_kwargs"]["lower_agent_kwargs"]["action_chunk_size"] = args.action_chunk_size
         exp_name = f"{exp_name}_ck{args.action_chunk_size}"
     if args.inv_temp is not None:
         config['agent_kwargs']['inv_temp'] = args.inv_temp
@@ -570,7 +622,8 @@ def main(args):
     if args.offline_training_steps > 0:
         exp_name = f"{exp_name}_offline"
 
-    setup_wandb(project='cs185_default_project', name=exp_name, group=args.run_group, config=config)
+    wandb_config = config if online_config is None else {"offline_config": config, "online_config": online_config}
+    setup_wandb(project='cs185_default_project', name=exp_name, group=args.run_group, config=wandb_config)
     args.save_dir = os.path.join(logdir_prefix, args.run_group, exp_name)
     os.makedirs(args.save_dir, exist_ok=True)
     train_logger = Logger(os.path.join(args.save_dir, 'train.csv'))
@@ -584,12 +637,24 @@ def main(args):
         # Hint: You might consider passing the agent's path to the online training loop
         agent_path_offline = run_offline_training_loop(config, train_logger, eval_logger, args, start_step=0)
         start_step = args.offline_training_steps
+    elif args.load_agent_path is not None:
+        agent_path = Path(args.load_agent_path).expanduser()
+        if not agent_path.is_file():
+            raise FileNotFoundError(f"--load_agent_path does not exist: {agent_path}")
+        agent_path_offline = str(agent_path)
         
     
     if args.online_training_steps > 0:
         print(f"Running online training loop with {args.online_training_steps} steps")
         # TODO(student): Implement online training loop
-        agent_path_online = run_online_training_loop(config, train_logger, eval_logger, args, agent_path_offline, start_step=start_step)
+        agent_path_online = run_online_training_loop(
+            online_config or config,
+            train_logger,
+            eval_logger,
+            args,
+            agent_path_offline,
+            start_step=start_step,
+        )
         
     wandb.finish()
 

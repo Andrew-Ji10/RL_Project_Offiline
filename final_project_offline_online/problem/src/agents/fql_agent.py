@@ -247,7 +247,12 @@ class FQLAgent(nn.Module):
 
         # Hint: *Do* clip the one-step actor actions when feeding them to the critic
         clipped = torch.clamp(pred, -1, 1)
+        critic_requires_grad = [p.requires_grad for p in self.critic.parameters()]
+        for p in self.critic.parameters():
+            p.requires_grad_(False)
         q_val = self.reduce_q_ensemble(self.critic(observations, clipped))
+        for p, requires_grad in zip(self.critic.parameters(), critic_requires_grad):
+            p.requires_grad_(requires_grad)
         q_loss = -weighted_mean(q_val, sample_weights)
 
         # Total loss.

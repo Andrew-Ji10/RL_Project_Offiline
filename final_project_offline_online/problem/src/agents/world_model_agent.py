@@ -177,7 +177,12 @@ class WorldModelAgent(nn.Module):
     def generate_synthetic_batch(
         self,
         observations: torch.Tensor,
+        candidate_batch_size: int | None = None,
     ) -> dict:
+        if candidate_batch_size is not None and candidate_batch_size < observations.shape[0]:
+            candidate_idx = torch.randperm(observations.shape[0], device=observations.device)[:candidate_batch_size]
+            observations = observations[candidate_idx]
+
         obs = observations
         rollout_observations = []
         rollout_actions = []
@@ -320,7 +325,20 @@ class WorldModelAgent(nn.Module):
         warmup_gate_open = step >= self.world_model_warmup_steps
 
         if warmup_gate_open:
-            synthetic_candidate = self.generate_synthetic_batch(observations)
+            min_candidate_ratio = 0.05
+            candidate_ratio = max(
+                self.current_synthetic_ratio,
+                self.initial_synthetic_ratio,
+                min_candidate_ratio,
+            )
+            candidate_batch_size = min(
+                observations.shape[0],
+                max(32, int(observations.shape[0] * candidate_ratio * 2.0)),
+            )
+            synthetic_candidate = self.generate_synthetic_batch(
+                observations,
+                candidate_batch_size=candidate_batch_size,
+            )
             uncertainty_gate_open = (
                 bool(synthetic_candidate)
                 and synthetic_candidate["candidate_mean_uncertainty"].item()
