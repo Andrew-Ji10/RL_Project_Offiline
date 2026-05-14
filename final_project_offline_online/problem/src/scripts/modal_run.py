@@ -14,8 +14,9 @@ NETRC_CANDIDATE_PATHS = [
 ]
 PROJECT_DIR = "/root/project"
 VOLUME_PATH = "/root/exp"
+DEFAULT_GPU = "H100"
 # DEFAULT_GPU = "A100"
-DEFAULT_GPU = "A10G"
+# DEFAULT_GPU = "A10G"
 DEFAULT_CPU = 4.0
 DEFAULT_MEMORY = 16384  # MB
 volume = modal.Volume.from_name("offline-to-online-project-volume", create_if_missing=True)
